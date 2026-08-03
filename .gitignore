@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.eggs/
+build/
+dist/
+
+# 환경변수 (API Key, Webhook Secret 등 비밀값)
+.env
+*.env
+!.env.example
+
+# Agent Server 런타임 산출물
+agent-server/data/            # SQLite DB
+agent-server/workspace/       # clone 된 대상 저장소
+agent-server/logs/            # 감사 로그
+
+# Local Client 설정 (사용자 로컬 고유값)
+.codetest/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
