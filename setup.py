@@ -1,17 +1,19 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="codetest",               # 설치될 패키지 이름
+    name="codetest",
     version="0.1.0",
-    packages=find_packages(),      # 소스코드 폴더 자동 탐색
-    install_requires=[             # 파이썬 코드가 사용하는 외부 라이브러리 (필요한 경우 작성)
-        # 예: "requests", "fastapi" 
+    # 1. 파이썬에게 실제 패키지들이 'local-client' 폴더 안에 있다고 알려줍니다.
+    package_dir={"": "local-client"},
+    packages=find_packages(where="local-client"),
+    
+    install_requires=[
+        # 필요한 외부 라이브러리가 있다면 여기에 추가
     ],
     entry_points={
         "console_scripts": [
-            # 핵심! 터미널에서 'codetest' 명령어를 쳤을 때 실행될 파이썬 함수를 연결합니다.
-            # "명령어이름=폴더명.파일명:실행할함수명" 구조입니다. (실제 코드 구조에 맞게 수정 필요)
-            "codetest=my_package.main:main", 
+            # 2. 터미널에서 codetest를 치면 -> codetest 폴더의 __main__.py 안의 main() 함수를 실행해라
+            "codetest=codetest.__main__:main", 
         ],
     },
 )
