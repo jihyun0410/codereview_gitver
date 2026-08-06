@@ -1,15 +1,17 @@
 """
 TUI 렌더러.
 
-결과 화면 구성
+정의서 [결과 양식]
     | 결과                  |      |
     | 기능 중요도           | LOW  |
     | TEST CODE             | 보기 |
     | TEST RESULT           | PASS |
     | TEST RESULT 상세 보기 |      |
 
-  (1) TEST CODE '보기'        → 테스트 대상 코드 + 작성 근거
-  (2) 'TEST RESULT 상세 보기' → 결과 값 + 적절성 판단과 근거
+  (1) TEST CODE '보기'        → 실제 Test 를 진행한 Code + Test Code 작성 근거
+                                (사고의 사슬 · 정상/실패 케이스 포함)
+  (2) 'TEST RESULT 상세 보기' → 결과 값 + 적절성 판단 결과와 근거
+                                + 파악한 변경 의도와 근거  (정의서 (2))
   (3) 기능 중요도             → HIGH / MID / LOW
 """
 
@@ -141,48 +143,140 @@ def print_report(
     console.print(Panel(table, border_style="cyan"))
 
 
-def print_test_code(language: str, test_code: str, target_code: str, rationale: str) -> None:
-    """(1) TEST CODE '보기' — 테스트 대상 코드와 작성 근거."""
+def print_test_code(
+    test_code: str,
+    target_code: str,
+    thinking: str = "",
+    test_cases: str = "",
+    rationale: str = "",
+) -> None:
+    """
+    (1) TEST CODE '보기'.
+
+    정의서: "실제 Test를 진행한 Code와 Test Code를 작성한 근거가 보여짐"
+    작성 근거에는 사고의 사슬(생각 과정)과 정상/실패 케이스 판단을 함께 싣는다.
+    """
     console.print()
     if target_code:
-        console.print(Panel(_markup(target_code), title="[bold]테스트를 진행한 코드[/]",
-                            border_style="blue"))
+        console.print(
+            Panel(_plain(target_code), title="[bold]테스트를 진행한 코드[/]", border_style="blue")
+        )
+
     console.print(
         Panel(
-            Syntax(test_code or "-", language or "text", theme="ansi_dark", word_wrap=True),
-            title="[bold]TEST CODE[/]",
+            Syntax(test_code or "-", "java", theme="ansi_dark", word_wrap=True),
+            title="[bold]TEST CODE (@SpringBootTest)[/]",
             border_style="cyan",
         )
     )
+
+    if thinking:
+        console.print(
+            Panel(_plain(thinking), title="[bold]생각 과정 (사고의 사슬)[/]", border_style="magenta")
+        )
+    if test_cases:
+        console.print(
+            Panel(_plain(test_cases), title="[bold]정상 / 실패 케이스 판단[/]", border_style="magenta")
+        )
     console.print(
-        Panel(rationale or "-", title="[bold]Test Code 작성 근거[/]", border_style="magenta")
+        Panel(_plain(rationale or "-"), title="[bold]Test Code 작성 근거[/]", border_style="magenta")
     )
 
 
-def print_result_detail(
-    result: str, verdict: str, verdict_rationale: str, details: str, output: str
-) -> None:
-    """(2) 'TEST RESULT 상세 보기' — 결과 값과 적절성 판단 결과·근거."""
+def print_result_detail(report: dict) -> None:
+    """
+    (2) 'TEST RESULT 상세 보기'.
+
+    정의서: "결과 값을 보여주고 적절성 여부에 대한 판단 결과, 근거 또한 보여줌"
+            "파악한 의도와 근거에 대한 내용을 <Test Result 보기>의 결과값에 넣는다"
+    """
+    result = report.get("result", "")
     console.print()
     console.print(
         Panel(
-            Text(result or "-", style=RESULT_STYLE.get((result or "").upper(), "white")),
+            Text(result or "-", style=RESULT_STYLE.get(result.upper(), "white")),
             title="[bold]TEST RESULT[/]",
             border_style="cyan",
         )
     )
-    if output:
-        console.print(Panel(_markup(output), title="[bold]결과 값 (실행 출력)[/]",
-                            border_style="blue"))
-    if details:
-        console.print(Panel(details, title="[bold]결과 상세[/]", border_style="blue"))
+
+    # --- 파악한 의도 (정의서 (2)) ---
+    intent = report.get("intent") or "-"
     console.print(
         Panel(
-            f"[bold]판단[/]: {verdict or '-'}\n\n{verdict_rationale or '-'}",
+            f"[bold]의도[/]: {intent}\n\n{_plain(report.get('intent_rationale') or '-')}",
+            title="[bold]변경 의도와 근거[/]",
+            border_style="green",
+        )
+    )
+
+    # --- 실행 집계 + JaCoCo ---
+    console.print(Panel(_summary_table(report), title="[bold]결과 값[/]", border_style="blue"))
+
+    failures = report.get("failures") or []
+    if failures:
+        console.print(
+            Panel(_plain("\n".join(f"- {item}" for item in failures)),
+                  title="[bold]실패 내역[/]", border_style="red")
+        )
+    if report.get("details"):
+        console.print(Panel(_plain(report["details"]), title="[bold]결과 상세[/]", border_style="blue"))
+    if report.get("output"):
+        console.print(
+            Panel(_plain(report["output"]), title="[bold]실행 출력[/]", border_style="blue")
+        )
+
+    console.print(
+        Panel(
+            f"[bold]판단[/]: {report.get('verdict') or '-'}\n\n"
+            f"{_plain(report.get('verdict_rationale') or '-')}",
             title="[bold]적절성 판단 결과 및 근거[/]",
             border_style="magenta",
         )
     )
+
+
+def _summary_table(report: dict) -> Table:
+    """실행 집계 · @SpringBootTest 적용 여부 · JaCoCo 커버리지."""
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column("항목", style="bold", width=22)
+    table.add_column("값", overflow="fold")
+
+    table.add_row(
+        "테스트",
+        f"총 {report.get('total', 0)} / 성공 {report.get('passed', 0)} "
+        f"/ 실패 {report.get('failed', 0)} / 건너뜀 {report.get('skipped', 0)}",
+    )
+    table.add_row("gradle exit code", str(report.get("exit_code", "-")))
+
+    applied = report.get("springboot_applied")
+    table.add_row(
+        "@SpringBootTest",
+        Text("적용됨", style="green") if applied else Text("미적용", style="red"),
+    )
+    if report.get("test_file_path"):
+        table.add_row("실행 파일", report["test_file_path"])
+
+    coverage = report.get("coverage")
+    if coverage:
+        table.add_row(
+            "JaCoCo 커버리지",
+            f"라인 {coverage.get('line_rate')}% "
+            f"({coverage.get('line_covered')}/"
+            f"{coverage.get('line_covered', 0) + coverage.get('line_missed', 0)}), "
+            f"분기 {coverage.get('branch_rate')}%",
+        )
+    elif report.get("jacoco_enabled"):
+        # 테스트가 실패하면 gradle 이 jacocoTestReport 까지 가지 않는다.
+        table.add_row(
+            "JaCoCo", Text("리포트 없음 (테스트 실패로 커버리지 미집계)", style="yellow")
+        )
+    else:
+        table.add_row("JaCoCo", Text("프로젝트 build 설정에 미적용", style="yellow"))
+
+    for note in report.get("applied") or []:
+        table.add_row("주입 작업", note)
+    return table
 
 
 def prompt_view(has_test_code: bool, has_detail: bool) -> str | None:
@@ -211,7 +305,7 @@ def prompt_view(has_test_code: bool, has_detail: bool) -> str | None:
     return choice or None
 
 
-def _markup(text: str, limit: int = 4000) -> Text:
+def _plain(text: str, limit: int = 4000) -> Text:
     """rich 마크업으로 해석되지 않도록 순수 텍스트로 감싼다."""
     clipped = text if len(text) <= limit else text[:limit] + "\n… (이하 생략)"
     return Text(clipped)
