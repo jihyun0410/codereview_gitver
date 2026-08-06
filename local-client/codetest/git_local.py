@@ -24,6 +24,20 @@ SCOPES: dict[str, tuple[list[str], bool]] = {
     "worktree": (["HEAD"], True),     # git diff HEAD
 }
 
+#: 에이전트가 스스로 만든 산출물 — "수정이 발생한 소스 코드" 에 포함되면 안 된다.
+#: (생성한 test.txt 가 다음 실행에서 테스트 대상으로 잡히는 자기 오염 방지)
+AGENT_ARTIFACTS: tuple[str, ...] = (
+    ".codetest/",
+    "src/test/test.txt",
+)
+
+
+def is_agent_artifact(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return any(
+        normalized == item or normalized.startswith(item) for item in AGENT_ARTIFACTS
+    )
+
 
 class GitError(RuntimeError):
     """git 명령 실패."""
@@ -122,7 +136,7 @@ def collect_changes(scope: str = "unstaged", repo_root: Path | None = None) -> L
     diff_args, include_untracked = SCOPES[scope]
     diff_args = [_resolve_head(root) if arg == "HEAD" else arg for arg in diff_args]
 
-    diff = _run_git(["diff", *diff_args, "--unified=3"], cwd=root)
+    diff = _strip_artifacts(_run_git(["diff", *diff_args, "--unified=3"], cwd=root))
 
     files: list[ChangedFile] = []
     name_status = dict(
@@ -133,6 +147,8 @@ def collect_changes(scope: str = "unstaged", repo_root: Path | None = None) -> L
         if len(parts) < 3:
             continue
         additions, deletions, path = parts[0], parts[1], parts[-1]
+        if is_agent_artifact(path):
+            continue
         files.append(
             ChangedFile(
                 path=path,
@@ -148,7 +164,7 @@ def collect_changes(scope: str = "unstaged", repo_root: Path | None = None) -> L
             for path in _run_git(
                 ["ls-files", "--others", "--exclude-standard"], cwd=root
             ).splitlines()
-            if path.strip()
+            if path.strip() and not is_agent_artifact(path)
         ]
         for path in untracked:
             files.append(ChangedFile(path=path, status="added"))
@@ -178,6 +194,45 @@ def read_files(repo_root: Path, paths: list[str], max_bytes: int = 200_000) -> l
         except OSError:
             continue
     return results
+
+
+def _strip_artifacts(diff: str) -> str:
+    """
+    diff 에서 에이전트 산출물 파일 블록을 통째로 제거한다.
+
+    서버(MCP)의 diff 파서와 LLM 프롬프트 양쪽에 test.txt 가 '변경된 소스'로
+    들어가는 것을 막는다.
+    """
+    if not diff.strip():
+        return diff
+
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current:
+            current.append(line)
+        else:
+            current = [line]  # diff 헤더 없이 시작하는 경우 그대로 유지
+    if current:
+        blocks.append(current)
+
+    kept = [block for block in blocks if not _block_is_artifact(block)]
+    return "\n".join("\n".join(block) for block in kept)
+
+
+def _block_is_artifact(block: list[str]) -> bool:
+    """`diff --git a/<path> b/<path>` 헤더로 산출물 여부를 판정한다."""
+    header = block[0] if block else ""
+    if not header.startswith("diff --git "):
+        return False
+    parts = header.split()
+    if len(parts) < 4:
+        return False
+    return any(is_agent_artifact(part[2:]) for part in parts[2:4] if part[:2] in ("a/", "b/"))
 
 
 def _parse_name_status(output: str) -> list[tuple[str, str]]:

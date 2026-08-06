@@ -1,8 +1,9 @@
 """
-Agent Server REST API 클라이언트.
+Agent REST API 클라이언트.
 
-로컬 클라이언트는 **오직 이 클래스를 통해서만** 서버와 통신한다.
-Test Code 생성과 결과 판정은 서버가, 테스트 실행은 로컬이 담당한다.
+로컬 클라이언트는 **오직 이 클래스를 통해서만** Agent 와 통신한다.
+Agent 는 LLM 판단을, MCP 는 코드 기반 처리(AST·@SpringBootTest 주입·JaCoCo 실행)를
+담당하며 둘 사이의 송/수신은 Agent 가 처리하므로 클라이언트는 Agent 만 알면 된다.
 """
 
 from __future__ import annotations
@@ -11,7 +12,10 @@ from typing import Any
 
 import httpx
 
-DEFAULT_TIMEOUT = 300.0  # LLM 생성은 수 분이 걸릴 수 있다
+#: LLM 생성 + Gradle 빌드가 겹치면 수 분이 걸린다
+DEFAULT_TIMEOUT = 300.0
+#: 테스트 실행까지 포함하는 호출(run/execute)의 기본 대기 시간
+EXECUTE_TIMEOUT = 1200.0
 
 
 class ApiError(RuntimeError):
@@ -35,10 +39,11 @@ class AgentClient:
             headers["X-API-Key"] = self.api_key
         return headers
 
-    def _request(self, method: str, path: str, **kwargs) -> Any:
+    def _request(self, method: str, path: str, timeout: float | None = None, **kwargs) -> Any:
         url = f"{self.base_url}{path}"
+        effective = timeout or self.timeout
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            with httpx.Client(timeout=effective) as client:
                 response = client.request(method, url, headers=self._headers(), **kwargs)
         except httpx.ConnectError as exc:
             raise ApiError(
@@ -48,7 +53,7 @@ class AgentClient:
                 f"  ({exc})"
             ) from None
         except httpx.TimeoutException:
-            raise ApiError(f"요청이 시간 초과되었습니다 ({self.timeout:.0f}s).") from None
+            raise ApiError(f"요청이 시간 초과되었습니다 ({effective:.0f}s).") from None
 
         if response.status_code >= 400:
             raise ApiError(_extract_detail(response), response.status_code)
@@ -88,6 +93,7 @@ class AgentClient:
     def generate_tests(
         self, project_id: str, diff: str, sources: list[dict], scope: str
     ) -> dict:
+        """codetest generate — 생성만 한다."""
         return self._request(
             "POST",
             "/tests/generate",
@@ -99,18 +105,49 @@ class AgentClient:
             },
         )
 
-    def report_tests(
-        self, project_id: str, test_code: str, output: str, exit_code: int, language: str
+    def run_tests(
+        self,
+        project_id: str,
+        diff: str,
+        sources: list[dict],
+        scope: str,
+        timeout: float | None = None,
     ) -> dict:
+        """codetest run — 생성 + @SpringBootTest 실행 + 판정을 한 번에 받는다."""
         return self._request(
             "POST",
-            "/tests/report",
+            "/tests/run",
+            timeout=timeout or EXECUTE_TIMEOUT,
+            json={
+                "project_id": project_id,
+                "diff": diff,
+                "sources": sources,
+                "scope": scope,
+            },
+        )
+
+    def execute_tests(
+        self,
+        project_id: str,
+        test_code: str,
+        sources: list[dict],
+        base_package: str | None = None,
+        intent: str = "",
+        intent_rationale: str = "",
+        timeout: float | None = None,
+    ) -> dict:
+        """codetest test — src/test/test.txt 의 Test Code 를 실행하고 판정을 받는다."""
+        return self._request(
+            "POST",
+            "/tests/execute",
+            timeout=timeout or EXECUTE_TIMEOUT,
             json={
                 "project_id": project_id,
                 "test_code": test_code,
-                "output": output,
-                "exit_code": exit_code,
-                "language": language,
+                "sources": sources,
+                "base_package": base_package,
+                "intent": intent,
+                "intent_rationale": intent_rationale,
             },
         )
 
