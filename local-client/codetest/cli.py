@@ -79,7 +79,6 @@ def _collect(repo_root: Path, scope: str) -> tuple[str, list[dict]]:
 def project_register(
     name: str | None = typer.Option(None, "--name", "-n", help="프로젝트 명 (기본: 디렉터리 이름)"),
     owner: str | None = typer.Option(None, "--owner", "-o", help="담당자 (기본: git user.name)"),
-    github_token: str | None = typer.Option(None, "--token", "-t", help="Github API Token"),
 ) -> None:
     """명령어를 입력한 환경의 Project 를 등록하고 필요한 정보를 서버로 전달한다."""
     repo_root = _repo()
@@ -92,7 +91,6 @@ def project_register(
         "name": name or repo_root.name,
         "git_url": changes.remote_url,
         "owner": owner or git_user(repo_root),
-        "github_token": github_token,
         "default_branch": changes.branch,
     }
 

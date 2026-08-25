@@ -20,7 +20,7 @@ LOCAL_CONFIG_RELPATH = Path(".codetest") / "config.json"
 
 @dataclass
 class Config:
-    server_url: str = "http://maxis-proxy.mks01.test.com:80"
+    server_url: str = "http://maxis-proxy.mks01.skhynix.com:80/mcp/999c9f67-4571-4736-aed4-fe61ded3f835"
     api_key: str = ""
     #: 이 저장소에 대응하는 Agent Server 프로젝트 ID
     project_id: str | None = None

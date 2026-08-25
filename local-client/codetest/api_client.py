@@ -71,7 +71,6 @@ class AgentClient:
         name: str,
         git_url: str,
         owner: str,
-        github_token: str | None = None,
         default_branch: str = "main",
     ) -> dict:
         return self._request(
@@ -81,7 +80,6 @@ class AgentClient:
                 "name": name,
                 "git_url": git_url,
                 "owner": owner,
-                "github_token": github_token,
                 "default_branch": default_branch,
             },
         )

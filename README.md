@@ -54,7 +54,7 @@ pip install git+https://github.com/jihyun0410/codereview_gitver.git
 준비 명령:
 
 ```bash
-codetest project register --token <GitHub_API_Token>   # 최초 1회
+codetest project register                              # 최초 1회
 codetest project delete
 ```
 
