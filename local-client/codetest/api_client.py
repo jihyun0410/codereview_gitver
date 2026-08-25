@@ -63,7 +63,7 @@ class AgentClient:
 
     # ------------------------------------------------------------------
     def health(self) -> dict:
-        return self._request("GET", "/health")
+        return self._request("POST", "/hello")
 
     # --- 프로젝트 ------------------------------------------------------
     def create_project(
@@ -76,7 +76,7 @@ class AgentClient:
     ) -> dict:
         return self._request(
             "POST",
-            "/projects",
+            "/register_projects",
             json={
                 "name": name,
                 "git_url": git_url,
@@ -87,7 +87,10 @@ class AgentClient:
         )
 
     def delete_project(self, project_id: str) -> None:
-        self._request("DELETE", f"/projects/{project_id}")
+        self._request("POST", "/delete_projects",
+                      json = {
+                          "project_id" : project_id
+                      })
 
     # --- Test Code -----------------------------------------------------
     def generate_tests(
@@ -132,22 +135,18 @@ class AgentClient:
         test_code: str,
         sources: list[dict],
         base_package: str | None = None,
-        intent: str = "",
-        intent_rationale: str = "",
         timeout: float | None = None,
     ) -> dict:
         """codetest test — src/test/test.txt 의 Test Code 를 실행하고 판정을 받는다."""
         return self._request(
             "POST",
-            "/tests/execute",
+            "/executes_tests",
             timeout=timeout or EXECUTE_TIMEOUT,
             json={
                 "project_id": project_id,
                 "test_code": test_code,
                 "sources": sources,
                 "base_package": base_package,
-                "intent": intent,
-                "intent_rationale": intent_rationale,
             },
         )
 

@@ -20,7 +20,7 @@ LOCAL_CONFIG_RELPATH = Path(".codetest") / "config.json"
 
 @dataclass
 class Config:
-    server_url: str = "http://localhost:8000"
+    server_url: str = "http://maxis-proxy.mks01.test.com:80"
     api_key: str = ""
     #: 이 저장소에 대응하는 Agent Server 프로젝트 ID
     project_id: str | None = None

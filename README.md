@@ -82,7 +82,7 @@ codetest project delete
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `CODETEST_SERVER_URL` | `http://localhost:8000` | Agent 주소 |
+| `CODETEST_SERVER_URL` | `http://maxis-proxy.mks01.test.com:80` | Agent 주소 |
 | `CODETEST_API_KEY` | (없음) | Agent 인증 키 |
 
 ## 산출물
