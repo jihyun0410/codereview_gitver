@@ -28,7 +28,7 @@ class ApiError(RuntimeError):
 
 class AgentClient:
     def __init__(self, server_url: str, api_key: str = "", timeout: float = DEFAULT_TIMEOUT) -> None:
-        self.base_url = server_url.rstrip("/") + "/api/v1"
+        self.base_url = server_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
 
@@ -79,7 +79,7 @@ class AgentClient:
     ) -> dict:
         return self._request(
             "POST",
-            "/register_projects",
+            "/register_project",
             json={
                 "name": name,
                 "git_url": git_url,
@@ -89,7 +89,7 @@ class AgentClient:
         )
 
     def delete_project(self, project_id: str) -> None:
-        self._request("POST", "/delete_projects",
+        self._request("POST", "/delete_project",
                       json = {
                           "project_id" : project_id
                       })
@@ -101,7 +101,7 @@ class AgentClient:
         """codetest generate — 생성만 한다."""
         return self._request(
             "POST",
-            "/tests/generate",
+            "/tests_generate",
             json={
                 "project_id": project_id,
                 "diff": diff,
@@ -121,7 +121,7 @@ class AgentClient:
         """codetest run — 생성 + @SpringBootTest 실행 + 판정을 한 번에 받는다."""
         return self._request(
             "POST",
-            "/tests/run",
+            "/test_run",
             timeout=timeout or EXECUTE_TIMEOUT,
             json={
                 "project_id": project_id,
@@ -142,7 +142,7 @@ class AgentClient:
         """codetest test — src/test/test.txt 의 Test Code 를 실행하고 판정을 받는다."""
         return self._request(
             "POST",
-            "/executes_tests",
+            "/execute_tests",
             timeout=timeout or EXECUTE_TIMEOUT,
             json={
                 "project_id": project_id,
