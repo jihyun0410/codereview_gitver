@@ -95,9 +95,12 @@ def project_register(
     }
 
     cfg = config_module.load(repo_root)
+    client = AgentClient(cfg.server_url, cfg.api_key, timeout=120.0)
     ui.print_header("codetest project register", payload["git_url"])
+    # 프로젝트 정보를 어느 주소로 보내는지 먼저 보여 준다 (서버 주소 오설정을 바로 확인)
+    ui.print_info(f"전송 대상: POST {client.url('/register_projects')}", soft_wrap=True)
     try:
-        created = AgentClient(cfg.server_url, cfg.api_key, timeout=120.0).create_project(**payload)
+        created = client.create_project(**payload)
     except ApiError as exc:
         _fail(str(exc))
         return
@@ -120,8 +123,10 @@ def project_delete(
     if not yes and not typer.confirm(f"프로젝트({cfg.project_id}) 정보를 삭제할까요?"):
         raise typer.Exit(code=0)
 
+    client = AgentClient(cfg.server_url, cfg.api_key, timeout=60.0)
+    ui.print_info(f"전송 대상: POST {client.url('/delete_projects')}", soft_wrap=True)
     try:
-        AgentClient(cfg.server_url, cfg.api_key, timeout=60.0).delete_project(cfg.project_id)
+        client.delete_project(cfg.project_id)
     except ApiError as exc:
         _fail(str(exc))
         return

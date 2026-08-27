@@ -65,8 +65,9 @@ def print_error(message: str) -> None:
     console.print(Panel(message, title="[bold red]오류[/]", border_style="red"))
 
 
-def print_info(message: str) -> None:
-    console.print(f"[cyan]>[/] {message}")
+def print_info(message: str, soft_wrap: bool = False) -> None:
+    # soft_wrap=True : URL 처럼 중간에 줄바꿈이 끼면 안 되는 값에 사용
+    console.print(f"[cyan]>[/] {message}", soft_wrap=soft_wrap)
 
 
 def print_success(message: str) -> None:

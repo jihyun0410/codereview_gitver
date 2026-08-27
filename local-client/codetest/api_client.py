@@ -39,8 +39,12 @@ class AgentClient:
             headers["X-API-Key"] = self.api_key
         return headers
 
+    def url(self, path: str) -> str:
+        """엔드포인트 전체 주소 (터미널 출력용)."""
+        return f"{self.base_url}{path}"
+
     def _request(self, method: str, path: str, timeout: float | None = None, **kwargs) -> Any:
-        url = f"{self.base_url}{path}"
+        url = self.url(path)
         effective = timeout or self.timeout
         try:
             with httpx.Client(timeout=effective) as client:
