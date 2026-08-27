@@ -98,15 +98,18 @@ def project_register(
     client = AgentClient(cfg.server_url, cfg.api_key, timeout=120.0)
     ui.print_header("codetest project register", payload["git_url"])
     # 프로젝트 정보를 어느 주소로 보내는지 먼저 보여 준다 (서버 주소 오설정을 바로 확인)
-    ui.print_info(f"전송 대상: POST {client.url('/register_projects')}", soft_wrap=True)
+    ui.print_info(f"전송 대상: {client.describe('register_project')}", soft_wrap=True)
     try:
         created = client.create_project(**payload)
     except ApiError as exc:
         _fail(str(exc))
         return
 
-    config_module.save_project_id(repo_root, created["id"])
-    ui.print_success(f"등록 완료: {created['name']} ({created['id']})")
+    project_id = created.get("id") or created.get("project_id")
+    if not project_id:
+        _fail(f"서버 응답에 project_id 가 없습니다: {created}")
+    config_module.save_project_id(repo_root, project_id)
+    ui.print_success(f"등록 완료: {created.get('name', repo_root.name)} ({project_id})")
     ui.print_info("MCP 가 전체 소스를 AST 로 파싱해 프로젝트 개요를 만들고 있습니다.")
 
 
@@ -124,7 +127,7 @@ def project_delete(
         raise typer.Exit(code=0)
 
     client = AgentClient(cfg.server_url, cfg.api_key, timeout=60.0)
-    ui.print_info(f"전송 대상: POST {client.url('/delete_projects')}", soft_wrap=True)
+    ui.print_info(f"전송 대상: {client.describe('delete_project')}", soft_wrap=True)
     try:
         client.delete_project(cfg.project_id)
     except ApiError as exc:
