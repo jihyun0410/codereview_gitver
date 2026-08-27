@@ -197,13 +197,11 @@ class AgentClient:
         self._call("delete_project", {"project_id": project_id})
 
     # --- Test Code -----------------------------------------------------
-    def generate_tests(
-        self, project_id: str, diff: str, sources: list[dict], scope: str
-    ) -> dict:
+    def generate_tests(self, project_id: str, diff: str, sources: list[dict]) -> dict:
         """codetest generate — 생성만 한다."""
         return self._call(
             "test_generate",
-            {"project_id": project_id, "diff": diff, "sources": sources, "scope": scope},
+            {"project_id": project_id, "diff": diff, "sources": sources},
         )
 
     def run_tests(
@@ -211,13 +209,12 @@ class AgentClient:
         project_id: str,
         diff: str,
         sources: list[dict],
-        scope: str,
         timeout: float | None = None,
     ) -> dict:
         """codetest run — 생성 + @SpringBootTest 실행 + 판정을 한 번에 받는다."""
         return self._call(
             "test_run",
-            {"project_id": project_id, "diff": diff, "sources": sources, "scope": scope},
+            {"project_id": project_id, "diff": diff, "sources": sources},
             timeout=timeout or EXECUTE_TIMEOUT,
         )
 

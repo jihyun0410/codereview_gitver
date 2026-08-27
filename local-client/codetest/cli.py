@@ -158,7 +158,7 @@ def run(
 
     ui.print_info("Test Code 생성 및 실행 중… (의도 분석 → 생성 → Gradle/JaCoCo 실행)")
     try:
-        payload = client.run_tests(project_id, diff, sources, scope, timeout=timeout)
+        payload = client.run_tests(project_id, diff, sources, timeout=timeout)
     except ApiError as exc:
         _fail(str(exc))
         return
@@ -181,7 +181,7 @@ def generate(
 
     ui.print_info("Test Code 생성 중… (의도 분석 → 생성)")
     try:
-        generated = client.generate_tests(project_id, diff, sources, "worktree")
+        generated = client.generate_tests(project_id, diff, sources)
     except ApiError as exc:
         _fail(str(exc))
         return
