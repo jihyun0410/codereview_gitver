@@ -224,9 +224,18 @@ class AgentClient:
         test_code: str,
         sources: list[dict],
         base_package: str | None = None,
+        diff: str = "",
+        intent: str = "",
+        intent_rationale: str = "",
         timeout: float | None = None,
     ) -> dict:
-        """codetest test — src/test/test.txt 의 Test Code 를 실행하고 판정을 받는다."""
+        """codetest test — src/test/test.txt 의 Test Code 를 실행하고 판정을 받는다.
+
+        diff 는 MCP 가 기능 중요도를 다시 판단하는 데 쓴다. 보내지 않으면 sources 만으로
+        판단하므로 변경 구간이 파일 전체로 잡혀 등급이 실제보다 높게 나올 수 있다.
+
+        intent / intent_rationale 은 지난 생성 때 파악한 의도다. 결과값에 함께 표시된다.
+        """
         return self._call(
             "execute_tests",
             {
@@ -234,6 +243,9 @@ class AgentClient:
                 "test_code": test_code,
                 "sources": sources,
                 "base_package": base_package,
+                "diff": diff,
+                "intent": intent,
+                "intent_rationale": intent_rationale,
             },
             timeout=timeout or EXECUTE_TIMEOUT,
         )

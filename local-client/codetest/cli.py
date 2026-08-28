@@ -209,14 +209,16 @@ def test(
         return
 
     # 실행 대상 코드가 최신이 되도록 Working Tree 변경분을 함께 보낸다.
+    # diff 도 같이 보낸다 — MCP 가 이번 실행의 기능 중요도를 다시 판단하는 근거다.
     try:
         changes = collect_changes("worktree", repo_root)
+        diff = changes.diff
         sources = [
             {"path": path, "content": content}
             for path, content in read_files(repo_root, [f.path for f in changes.files])
         ]
     except GitError:
-        sources = []
+        diff, sources = "", []
 
     ui.print_info("테스트 실행 중… (MCP: @SpringBootTest 주입 → Gradle/JaCoCo)")
     try:
@@ -225,6 +227,7 @@ def test(
             test_code=test_code,
             sources=sources,
             base_package=meta.get("base_package"),
+            diff=diff,
             intent=meta.get("intent", ""),
             intent_rationale=meta.get("intent_rationale", ""),
             timeout=timeout,
@@ -251,7 +254,9 @@ def _save(repo_root: Path, generated: dict) -> None:
 
 def _show(generated: dict, report: dict | None) -> None:
     """정의서 [결과 양식] 출력 + '보기' 선택 루프."""
-    importance = generated.get("importance", "-")
+    # `codetest test` 는 generated 가 로컬 캐시(.codetest/last_test.json)라 값이 낡았다.
+    # 이번 실행에서 MCP 가 판단한 중요도가 report 에 있으면 그것을 쓴다.
+    importance = (report or {}).get("importance") or generated.get("importance", "-")
     ui.print_report(
         importance,
         test_result=(report or {}).get("result"),
