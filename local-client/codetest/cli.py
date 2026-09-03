@@ -10,8 +10,12 @@
 등록/삭제 (서버에 프로젝트 개요를 만들기 위한 준비 명령):
   codetest project register / codetest project delete
 
-역할 분담: Test Code 생성·의도 파악·적절성 판정은 Agent(LLM)가,
-@SpringBootTest 주입과 JaCoCo 실행은 MCP(코드 기반)가 담당한다.
+역할 분담(흐름: CLI → MCP → Agent):
+  · MCP  — Git Diff/AST 변경 단위 식별, 기능 중요도 판정과 근거,
+           @SpringBootTest 주입, Gradle/JaCoCo 실행 (코드 기반)
+  · Agent — 변경 의도 파악, 사고의 사슬, Test Code 작성, 결과 적절성 판정 (LLM)
+
+CLI 는 MCP 하나만 알면 된다. MCP ↔ Agent 통신은 MCP 가 처리한다.
 """
 
 from __future__ import annotations
@@ -164,15 +168,18 @@ def run(
         return
 
     generated, report = payload["generated"], payload["report"]
-    _save(repo_root, generated)
-    _show(generated, report)
+    saved = _save(repo_root, generated)
+    _show(generated, report, saved)
 
 
 @app.command("generate")
 def generate(
     timeout: float = typer.Option(300.0, "--timeout", help="서버 응답 대기 시간(초)"),
 ) -> None:
-    """Git Working Tree 기반 변경 파일에 대하여 Test Code 만 생성한다."""
+    """Git Working Tree 기반 변경 파일에 대하여 Test Code 만 생성한다.
+
+    결과 화면의 'TEST CODE 보기' 를 클릭하면 생성된 src/test/test.txt 가 열린다.
+    """
     repo_root = _repo()
     client, project_id = _client(repo_root, timeout)
 
@@ -189,8 +196,8 @@ def generate(
     if not generated.get("test_code"):
         _fail("서버가 Test Code 를 생성하지 못했습니다.")
 
-    _save(repo_root, generated)
-    _show(generated, report=None)
+    saved = _save(repo_root, generated)
+    _show(generated, report=None, test_file=saved)
 
 
 @app.command("test")
@@ -236,13 +243,17 @@ def test(
         _fail(str(exc))
         return
 
-    _show({**meta, "test_code": test_code}, report)
+    _show({**meta, "test_code": test_code}, report, repo_root / runner.TEST_FILE)
 
 
 # ===========================================================================
 #  공통 출력 흐름
 # ===========================================================================
-def _save(repo_root: Path, generated: dict) -> None:
+def _save(repo_root: Path, generated: dict) -> Path:
+    """Test Code 를 src/test/test.txt 로 남기고 그 경로를 돌려준다.
+
+    결과 화면의 'TEST CODE 보기' 가 여는 파일이 바로 이 경로다.
+    """
     saved = runner.save_test(
         repo_root, generated.get("test_code", ""), runner.meta_from_generated(generated)
     )
@@ -250,16 +261,26 @@ def _save(repo_root: Path, generated: dict) -> None:
 
     for warning in generated.get("analysis_warnings") or []:
         ui.print_warning(warning)
+    return saved
 
 
-def _show(generated: dict, report: dict | None) -> None:
-    """정의서 [결과 양식] 출력 + '보기' 선택 루프."""
+def _show(generated: dict, report: dict | None, test_file: Path) -> None:
+    """정의서 [결과 양식] 출력 + '보기' 선택 루프.
+
+    'TEST CODE 보기' 는 화면에 코드를 찍는 대신 **test_file(src/test/test.txt)을 연다.**
+    표의 '보기' 는 이 파일을 가리키는 링크라 클릭만으로 같은 동작을 한다.
+    """
     # `codetest test` 는 generated 가 로컬 캐시(.codetest/last_test.json)라 값이 낡았다.
     # 이번 실행에서 MCP 가 판단한 중요도가 report 에 있으면 그것을 쓴다.
     importance = (report or {}).get("importance") or generated.get("importance", "-")
+    rationale = (report or {}).get("importance_rationale") or generated.get(
+        "importance_rationale", ""
+    )
     ui.print_report(
         importance,
         test_result=(report or {}).get("result"),
+        importance_rationale=rationale,
+        test_file=test_file,
         has_detail=report is not None,
     )
 
@@ -272,6 +293,7 @@ def _show(generated: dict, report: dict | None) -> None:
                 generated.get("thinking", ""),
                 generated.get("test_cases", ""),
                 generated.get("rationale", ""),
+                test_file=test_file,
             )
         elif choice == "r" and report is not None:
             ui.print_result_detail(report)

@@ -4,20 +4,28 @@ TUI 렌더러.
 정의서 [결과 양식]
     | 결과                  |      |
     | 기능 중요도           | LOW  |
+    | 중요도 판단 근거      | …    |
     | TEST CODE             | 보기 |
     | TEST RESULT           | PASS |
-    | TEST RESULT 상세 보기 |      |
+    | TEST RESULT 상세 보기 | 보기 |
 
-  (1) TEST CODE '보기'        → 실제 Test 를 진행한 Code + Test Code 작성 근거
-                                (사고의 사슬 · 정상/실패 케이스 포함)
+  (1) TEST CODE '보기'        → **생성된 test.txt 를 연다** (클릭 또는 [c])
+                                작성 근거(사고의 사슬 · 정상/실패 케이스)는 터미널에 함께 출력
   (2) 'TEST RESULT 상세 보기' → 결과 값 + 적절성 판단 결과와 근거
                                 + 파악한 변경 의도와 근거  (정의서 (2))
-  (3) 기능 중요도             → HIGH / MID / LOW
+  (3) 기능 중요도             → HIGH / MID / LOW **와 그렇게 판단한 근거**
+
+'보기' 는 파일 링크(OSC 8)로 그린다. IntelliJ 터미널·Windows Terminal 등에서는
+그대로 클릭하면 test.txt 가 열리고, 링크를 지원하지 않는 터미널에서는 아래
+선택 프롬프트의 [c] 로 같은 파일을 연다.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
@@ -114,20 +122,29 @@ def print_changed_files(files: list, scope: str) -> None:
 def print_report(
     importance: str,
     test_result: str | None,
-    has_test_code: bool = True,
+    importance_rationale: str = "",
+    test_file: Path | None = None,
     has_detail: bool = True,
 ) -> None:
-    """정의서에 명시된 결과 표를 출력한다."""
+    """정의서에 명시된 결과 표를 출력한다.
+
+    :param importance_rationale: 중요도를 그렇게 판단한 근거. 등급 바로 아래에 붙는다.
+    :param test_file: 생성된 Test Code 파일(`src/test/test.txt`).
+                      주어지면 'TEST CODE' 의 '보기' 가 이 파일을 여는 링크가 된다.
+    """
     table = Table(show_header=False, box=None, pad_edge=False)
     table.add_column("항목", style="bold", width=22)
-    table.add_column("값", width=30)
+    table.add_column("값", overflow="fold")
 
     table.add_row("결과", "")
     table.add_row(
         "기능 중요도",
         Text(importance or "-", style=IMPORTANCE_STYLE.get((importance or "").upper(), "white")),
     )
-    table.add_row("TEST CODE", Text("보기", style="cyan underline") if has_test_code else "-")
+    # 정의서: 등급만이 아니라 "어떠한 근거로 표시하는지" 를 함께 보여야 한다.
+    table.add_row("중요도 판단 근거", _rationale_text(importance_rationale))
+
+    table.add_row("TEST CODE", _view_link(test_file))
     if test_result is None:
         table.add_row("TEST RESULT", Text("미실행", style="dim"))
     else:
@@ -143,6 +160,60 @@ def print_report(
     console.print()
     console.print(Panel(table, border_style="cyan"))
 
+    if test_file is not None:
+        console.print(
+            f"[dim]TEST CODE '보기' 를 클릭하면 {test_file} 를 엽니다.[/]", soft_wrap=True
+        )
+
+
+def _rationale_text(rationale: str) -> Text:
+    """중요도 판단 근거. 여러 줄이면 그대로 여러 줄로 보여 준다."""
+    cleaned = (rationale or "").strip()
+    if not cleaned:
+        return Text("-", style="dim")
+    return Text(cleaned, style="dim")
+
+
+def _view_link(test_file: Path | None) -> Text:
+    """
+    'TEST CODE' 의 '보기'.
+
+    파일 경로를 알면 OSC 8 하이퍼링크로 그려 **클릭하면 test.txt 가 열리게** 한다.
+    (IntelliJ 터미널·Windows Terminal 등이 지원한다. 미지원 터미널은 [c] 로 연다.)
+    """
+    if test_file is None:
+        return Text("-", style="dim")
+    try:
+        uri = test_file.resolve().as_uri()
+    except (OSError, ValueError):
+        return Text("보기", style="cyan underline")
+    return Text("보기", style=f"cyan underline link {uri}")
+
+
+def open_test_file(test_file: Path) -> bool:
+    """
+    생성된 test.txt 를 OS 기본 프로그램으로 연다.
+
+    '보기' 클릭을 지원하지 않는 터미널에서 같은 동작을 하는 경로다.
+    열지 못하면 False 를 돌려 호출하는 쪽이 터미널 출력으로 대신하게 한다.
+    """
+    if not test_file.is_file():
+        return False
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(str(test_file))  # type: ignore[attr-defined]  # Windows 전용
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(test_file)])
+        else:
+            subprocess.Popen(
+                ["xdg-open", str(test_file)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except (OSError, AttributeError):
+        return False
+    return True
+
 
 def print_test_code(
     test_code: str,
@@ -150,26 +221,39 @@ def print_test_code(
     thinking: str = "",
     test_cases: str = "",
     rationale: str = "",
+    test_file: Path | None = None,
 ) -> None:
     """
     (1) TEST CODE '보기'.
 
+    생성된 Test Code 는 **`src/test/test.txt` 파일을 열어서** 본다.
+    파일을 열지 못한 터미널에서만 코드를 화면에 대신 출력한다.
+
     정의서: "실제 Test를 진행한 Code와 Test Code를 작성한 근거가 보여짐"
-    작성 근거에는 사고의 사슬(생각 과정)과 정상/실패 케이스 판단을 함께 싣는다.
+    작성 근거(사고의 사슬 · 정상/실패 케이스 판단)는 언제나 터미널에 함께 싣는다.
     """
     console.print()
+
+    opened = test_file is not None and open_test_file(test_file)
+    if opened:
+        print_success(f"Test Code 파일을 열었습니다: {test_file}")
+
     if target_code:
         console.print(
             Panel(_plain(target_code), title="[bold]테스트를 진행한 코드[/]", border_style="blue")
         )
 
-    console.print(
-        Panel(
-            Syntax(test_code or "-", "java", theme="ansi_dark", word_wrap=True),
-            title="[bold]TEST CODE (@SpringBootTest)[/]",
-            border_style="cyan",
+    if not opened:
+        # 파일을 열 수 없는 환경(원격 셸 등)에서는 코드를 그대로 보여 준다.
+        if test_file is not None:
+            print_warning(f"파일을 열 수 없어 화면에 출력합니다: {test_file}")
+        console.print(
+            Panel(
+                Syntax(test_code or "-", "java", theme="ansi_dark", word_wrap=True),
+                title="[bold]TEST CODE (@SpringBootTest)[/]",
+                border_style="cyan",
+            )
         )
-    )
 
     if thinking:
         console.print(
@@ -284,14 +368,16 @@ def prompt_view(has_test_code: bool, has_detail: bool) -> str | None:
     """
     표 아래에서 '보기' 를 선택받는다.
 
-    파이프/리다이렉트 등 비대화형 환경에서는 묻지 않고 종료한다.
+    표의 '보기' 링크 클릭이 곧 이 선택과 같은 동작이다. 링크를 지원하지 않는
+    터미널을 위한 대체 입력이므로 파이프/리다이렉트 등 비대화형 환경에서는
+    묻지 않고 종료한다.
     """
     if not sys.stdin.isatty():
         return None
 
     options = []
     if has_test_code:
-        options.append("[c] TEST CODE 보기")
+        options.append("[c] TEST CODE 보기 (test.txt 열기)")
     if has_detail:
         options.append("[r] TEST RESULT 상세 보기")
     if not options:
