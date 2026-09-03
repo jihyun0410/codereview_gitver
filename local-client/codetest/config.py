@@ -27,11 +27,19 @@ class Config:
 
 
 def _read_json(path: Path) -> dict:
+    """설정 JSON 을 읽는다. 못 읽으면 빈 dict.
+
+    인코딩은 utf-8-sig 로 읽는다. 이 파일은 Python 만 쓰는 게 아니라
+    codetest.ps1 이나 사용자가 메모장/IDE 로도 건드린다. Windows PowerShell 5.1 의
+    `Set-Content -Encoding UTF8` 은 BOM 을 붙이는데, 순수 utf-8 로 읽으면 BOM 때문에
+    JSONDecodeError 가 나고 project_id 가 없는 것처럼 보인다.
+    utf-8-sig 는 BOM 이 있으면 벗기고 없으면 그대로 읽으므로 양쪽 다 처리한다.
+    """
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return {}
 
 
