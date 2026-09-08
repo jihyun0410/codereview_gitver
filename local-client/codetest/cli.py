@@ -27,7 +27,17 @@ import typer
 from codetest import config as config_module
 from codetest import runner
 from codetest.api_client import EXECUTE_TIMEOUT, AgentClient, ApiError
-from codetest.git_local import GitError, collect_changes, find_repo_root, git_user, read_files
+
+#: 등록은 커밋 소스 스냅샷을 함께 올려 본문이 커진다.
+REGISTER_TIMEOUT = 600.0
+from codetest.git_local import (
+    GitError,
+    collect_changes,
+    collect_committed_files,
+    find_repo_root,
+    git_user,
+    read_files,
+)
 from codetest.tui import renderer as ui
 
 app = typer.Typer(help="Code Test AI Agent", add_completion=False, no_args_is_help=True)
@@ -99,10 +109,23 @@ def project_register(
     }
 
     cfg = config_module.load(repo_root)
-    client = AgentClient(cfg.server_url, cfg.api_key, timeout=120.0)
+    client = AgentClient(cfg.server_url, cfg.api_key, timeout=REGISTER_TIMEOUT)
     ui.print_header("codetest project register", payload["git_url"])
     # 프로젝트 정보를 어느 주소로 보내는지 먼저 보여 준다 (서버 주소 오설정을 바로 확인)
     ui.print_info(f"전송 대상: {client.describe('register_project')}", soft_wrap=True)
+
+    # 커밋된 소스를 함께 올린다. generate/run/test 는 미커밋 변경분만 보내므로,
+    # 이걸 올려 둬야 MCP 가 그 위에 변경분을 덮어 "현재 코드" 를 Agent 에 넘긴다.
+    try:
+        committed, warnings = collect_committed_files(repo_root)
+    except GitError as exc:
+        _fail(str(exc))
+        return
+    for warning in warnings:
+        ui.print_warning(warning)
+    ui.print_info(f"커밋된 소스 {len(committed)}개를 함께 전송합니다.")
+    payload["sources"] = [{"path": path, "content": content} for path, content in committed]
+
     try:
         created = client.create_project(**payload)
     except ApiError as exc:

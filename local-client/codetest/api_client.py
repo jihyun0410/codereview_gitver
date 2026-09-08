@@ -182,7 +182,15 @@ class AgentClient:
         git_url: str,
         owner: str,
         default_branch: str = "main",
+        sources: list[dict] | None = None,
+        timeout: float | None = None,
     ) -> dict:
+        """codetest project register — 커밋된 소스 스냅샷을 함께 올린다.
+
+        sources 는 이미 커밋된 파일 본문이다. 이후 generate/run/test 는 미커밋
+        변경분만 보내는데, MCP 가 이 스냅샷 위에 그것을 덮어 "현재 코드" 를 만들어
+        Agent 에 넘긴다. 없으면 LLM 이 변경 파일만 보고 구조만으로 테스트를 짜게 된다.
+        """
         return self._call(
             "register_project",
             {
@@ -190,7 +198,9 @@ class AgentClient:
                 "git_url": git_url,
                 "owner": owner,
                 "default_branch": default_branch,
+                "sources": sources or [],
             },
+            timeout=timeout,
         )
 
     def delete_project(self, project_id: str) -> None:

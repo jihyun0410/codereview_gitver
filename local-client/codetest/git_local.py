@@ -196,6 +196,63 @@ def read_files(repo_root: Path, paths: list[str], max_bytes: int = 200_000) -> l
     return results
 
 
+#: 등록 시 MCP 로 보낼 소스 확장자.
+#: MCP 파서가 다루는 언어 + 빌드/설정 파일. 이미지·바이너리·산출물은 제외한다.
+SOURCE_SUFFIXES: tuple[str, ...] = (
+    ".java", ".kt", ".xml", ".sql", ".py", ".js", ".ts", ".tsx", ".jsx",
+    ".gradle", ".properties", ".yml", ".yaml",
+)
+
+#: 등록 스냅샷 상한. 초과하면 앞에서부터 자르고 CLI 가 경고한다.
+MAX_SNAPSHOT_FILES = 800
+MAX_SNAPSHOT_BYTES = 8_000_000
+
+
+def collect_committed_files(
+    repo_root: Path,
+    max_files: int = MAX_SNAPSHOT_FILES,
+    max_total_bytes: int = MAX_SNAPSHOT_BYTES,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """
+    **커밋된** 소스 본문을 모은다 (`git ls-files`).
+
+    generate/run/test 는 미커밋 변경분만 보내므로, 커밋된 코드는 등록 때 한 번
+    올려 둬야 Agent 가 변경 지점이 호출하는 구현까지 보고 테스트를 만들 수 있다.
+
+    :returns: ((경로, 본문) 목록, 경고 문구 목록)
+    """
+    listed = _run_git(["ls-files", "-z"], cwd=repo_root).split("\0")
+    paths = [
+        path for path in listed
+        if path
+        and not is_agent_artifact(path)
+        and path.endswith(SOURCE_SUFFIXES)
+    ]
+    paths.sort()
+
+    warnings: list[str] = []
+    if len(paths) > max_files:
+        warnings.append(
+            f"커밋된 소스가 {len(paths)}개라 앞 {max_files}개만 보냅니다. "
+            "나머지는 변경이 생길 때 함께 전달됩니다."
+        )
+        paths = paths[:max_files]
+
+    collected: list[tuple[str, str]] = []
+    total = 0
+    for path, content in read_files(repo_root, paths):
+        size = len(content.encode("utf-8", errors="ignore"))
+        if total + size > max_total_bytes:
+            warnings.append(
+                f"스냅샷이 상한({max_total_bytes // 1_000_000}MB)에 걸려 "
+                f"{len(collected)}개까지만 보냅니다."
+            )
+            break
+        collected.append((path, content))
+        total += size
+    return collected, warnings
+
+
 def _strip_artifacts(diff: str) -> str:
     """
     diff 에서 에이전트 산출물 파일 블록을 통째로 제거한다.

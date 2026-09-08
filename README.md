@@ -58,6 +58,20 @@ codetest project register                              # 최초 1회
 codetest project delete
 ```
 
+### `register` 가 커밋된 소스를 함께 올리는 이유
+
+`generate`/`run`/`test` 는 `git diff HEAD` 기준이라 **미커밋 변경분만** 보냅니다.
+그것만 Agent 에 넘기면 LLM 이 변경 지점이 호출하는 **커밋된 구현**을 못 봐서
+구조만 보고 테스트를 만들게 됩니다.
+
+그래서 `register` 가 커밋된 소스(`git ls-files`)를 함께 올려 MCP 에 저장해 둡니다.
+이후 실행에서 MCP 가 그 스냅샷 위에 미커밋 변경분을 덮어 "현재 코드" 를 만들어
+Agent 에 넘깁니다.
+
+* 대상 확장자: `.java .kt .xml .sql .py .js .ts .tsx .jsx .gradle .properties .yml .yaml`
+* 상한: 파일 800개 / 총 8MB. 초과하면 경고를 띄우고 잘라서 보냅니다
+* 커밋이 쌓여 스냅샷이 낡았으면 `codetest project register` 를 다시 실행하면 갱신됩니다
+
 ## 결과 양식 (정의서 [UI])
 
 ```
