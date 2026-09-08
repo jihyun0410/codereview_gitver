@@ -25,7 +25,7 @@ from pathlib import Path
 import typer
 
 from codetest import config as config_module
-from codetest import runner
+from codetest import executor, runner
 from codetest.api_client import EXECUTE_TIMEOUT, AgentClient, ApiError
 
 #: 등록은 커밋 소스 스냅샷을 함께 올려 본문이 커진다.
@@ -168,14 +168,73 @@ def project_delete(
 # ===========================================================================
 #  run / generate / test
 # ===========================================================================
+def _execute_locally(
+    repo_root: Path,
+    client: AgentClient,
+    project_id: str,
+    generated: dict,
+    diff: str,
+    sources: list[dict],
+    gradle: str,
+    timeout: float,
+) -> dict:
+    """MCP 로 @SpringBootTest 를 주입받아 **이 PC 의 프로젝트에서** 실행한다.
+
+    실행은 로컬에서 하고, 중요도 재판정과 결과 적절성 판단만 서버에 맡긴다.
+    """
+    test_code = generated.get("test_code", "")
+
+    ui.print_info("@SpringBootTest 주입 중… (MCP)")
+    try:
+        prepared = client.prepare_test(project_id, test_code, generated.get("base_package"))
+    except ApiError as exc:
+        _fail(str(exc))
+        raise
+
+    ui.print_info(f"이 PC 에서 테스트 실행 중… (Gradle: {prepared['file_path']})")
+    try:
+        result = executor.run_tests(
+            repo_root,
+            test_source=prepared["source"],
+            test_file_path=prepared["file_path"],
+            springboot_applied=prepared.get("springboot_applied", False),
+            applied=prepared.get("applied"),
+            gradle_command=gradle,
+            timeout=int(timeout),
+        )
+    except executor.ExecutionError as exc:
+        _fail(str(exc))
+        raise
+
+    ui.print_info("결과 판정 중… (MCP: 중요도 재판정 → Agent 적절성 판단)")
+    try:
+        return client.report_execution(
+            project_id,
+            execution=result.to_dict(),
+            test_code=prepared["source"],
+            diff=diff,
+            sources=sources,
+            intent=generated.get("intent", ""),
+            intent_rationale=generated.get("intent_rationale", ""),
+            timeout=timeout,
+        )
+    except ApiError as exc:
+        _fail(str(exc))
+        raise
+
+
 @app.command("run")
 def run(
     stage: bool = typer.Option(
         False, "--stage", help="staging 단계에 올라간 파일을 대상으로 실행"
     ),
+    gradle: str = typer.Option("gradle", "--gradle", help="gradlew 가 없을 때 쓸 gradle 실행 파일"),
     timeout: float = typer.Option(EXECUTE_TIMEOUT, "--timeout", help="서버 응답 대기 시간(초)"),
 ) -> None:
-    """변경 파일로 Test Code 를 생성하고 @SpringBootTest 로 실행한 뒤 report 를 표시한다."""
+    """변경 파일로 Test Code 를 생성하고 @SpringBootTest 로 실행한 뒤 report 를 표시한다.
+
+    생성·판정은 서버가, **테스트 실행은 이 PC 가** 한다.
+    """
     scope = "staged" if stage else "unstaged"
     repo_root = _repo()
     client, project_id = _client(repo_root, timeout)
@@ -183,15 +242,19 @@ def run(
     ui.print_header("codetest run", "staging 포함 변경" if stage else "staging 미포함 변경")
     diff, sources = _collect(repo_root, scope)
 
-    ui.print_info("Test Code 생성 및 실행 중… (의도 분석 → 생성 → Gradle/JaCoCo 실행)")
+    ui.print_info("Test Code 생성 중… (MCP 분석 → Agent 생성)")
     try:
-        payload = client.run_tests(project_id, diff, sources, timeout=timeout)
+        generated = client.generate_tests(project_id, diff, sources)
     except ApiError as exc:
         _fail(str(exc))
         return
+    if not generated.get("test_code"):
+        _fail("서버가 Test Code 를 생성하지 못했습니다.")
 
-    generated, report = payload["generated"], payload["report"]
     saved = _save(repo_root, generated)
+    report = _execute_locally(
+        repo_root, client, project_id, generated, diff, sources, gradle, timeout
+    )
     _show(generated, report, saved)
 
 
@@ -225,9 +288,13 @@ def generate(
 
 @app.command("test")
 def test(
+    gradle: str = typer.Option("gradle", "--gradle", help="gradlew 가 없을 때 쓸 gradle 실행 파일"),
     timeout: float = typer.Option(EXECUTE_TIMEOUT, "--timeout", help="서버 응답 대기 시간(초)"),
 ) -> None:
-    """src/test/test.txt 의 Test Code 를 @SpringBootTest 로 실행하고 report 를 표시한다."""
+    """src/test/test.txt 의 Test Code 를 @SpringBootTest 로 실행하고 report 를 표시한다.
+
+    실행은 **이 PC 의 프로젝트**에서 이뤄진다. Gradle 과 JDK 가 필요하다.
+    """
     repo_root = _repo()
     client, project_id = _client(repo_root, timeout)
 
@@ -238,8 +305,7 @@ def test(
         _fail(str(exc))
         return
 
-    # 실행 대상 코드가 최신이 되도록 Working Tree 변경분을 함께 보낸다.
-    # diff 도 같이 보낸다 — MCP 가 이번 실행의 기능 중요도를 다시 판단하는 근거다.
+    # 중요도를 이번 실행 기준으로 다시 판단하도록 변경분을 함께 보낸다.
     try:
         changes = collect_changes("worktree", repo_root)
         diff = changes.diff
@@ -250,22 +316,10 @@ def test(
     except GitError:
         diff, sources = "", []
 
-    ui.print_info("테스트 실행 중… (MCP: @SpringBootTest 주입 → Gradle/JaCoCo)")
-    try:
-        report = client.execute_tests(
-            project_id,
-            test_code=test_code,
-            sources=sources,
-            base_package=meta.get("base_package"),
-            diff=diff,
-            intent=meta.get("intent", ""),
-            intent_rationale=meta.get("intent_rationale", ""),
-            timeout=timeout,
-        )
-    except ApiError as exc:
-        _fail(str(exc))
-        return
-
+    report = _execute_locally(
+        repo_root, client, project_id, {**meta, "test_code": test_code},
+        diff, sources, gradle, timeout,
+    )
     _show({**meta, "test_code": test_code}, report, repo_root / runner.TEST_FILE)
 
 

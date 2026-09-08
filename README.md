@@ -36,6 +36,23 @@
 
 클라이언트는 **MCP 만** 알면 됩니다. MCP ↔ Agent 통신은 MCP 가 처리합니다.
 
+### 테스트는 이 PC 에서 실행됩니다
+
+`run` / `test` 의 Gradle 실행은 **명령을 입력한 이 PC 의 프로젝트**에서 이뤄집니다.
+방금 고친 코드가 그대로 있는 작업 트리라 사본을 만들 필요가 없고, 서버에 JDK·Gradle
+을 둘 필요도 없습니다.
+
+```
+codetest run / test
+  1. prepare_test      MCP  @SpringBootTest 주입 + 저장 경로 계산
+  2. gradle test       CLI  이 PC 의 프로젝트에서 실행  ← JDK·Gradle 이 여기 필요
+  3. report_execution  MCP  중요도 재판정 → Agent 적절성 판정
+```
+
+* 이 PC 에 **JDK 와 Gradle**(또는 프로젝트의 `gradlew`)이 필요합니다
+* `gradlew` 가 없으면 시스템 `gradle` 을 씁니다. `--gradle` 로 경로를 지정할 수 있습니다
+* 실행이 끝나면 **주입했던 테스트 파일만** 지웁니다. 미커밋 변경분은 건드리지 않습니다
+
 ## 설치
 
 ```bash

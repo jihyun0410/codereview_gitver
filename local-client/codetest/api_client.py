@@ -214,46 +214,40 @@ class AgentClient:
             {"project_id": project_id, "diff": diff, "sources": sources},
         )
 
-    def run_tests(
-        self,
-        project_id: str,
-        diff: str,
-        sources: list[dict],
-        timeout: float | None = None,
+    def prepare_test(
+        self, project_id: str, test_code: str, base_package: str | None = None
     ) -> dict:
-        """codetest run — 생성 + @SpringBootTest 실행 + 판정을 한 번에 받는다."""
+        """1단계 — MCP 가 @SpringBootTest 를 주입하고 저장 경로를 계산한다."""
         return self._call(
-            "test_run",
-            {"project_id": project_id, "diff": diff, "sources": sources},
-            timeout=timeout or EXECUTE_TIMEOUT,
+            "prepare_test",
+            {
+                "project_id": project_id,
+                "test_code": test_code,
+                "base_package": base_package,
+            },
+            timeout=120.0,
         )
 
-    def execute_tests(
+    def report_execution(
         self,
         project_id: str,
+        execution: dict,
         test_code: str,
-        sources: list[dict],
-        base_package: str | None = None,
         diff: str = "",
+        sources: list[dict] | None = None,
         intent: str = "",
         intent_rationale: str = "",
         timeout: float | None = None,
     ) -> dict:
-        """codetest test — src/test/test.txt 의 Test Code 를 실행하고 판정을 받는다.
-
-        diff 는 MCP 가 기능 중요도를 다시 판단하는 데 쓴다. 보내지 않으면 sources 만으로
-        판단하므로 변경 구간이 파일 전체로 잡혀 등급이 실제보다 높게 나올 수 있다.
-
-        intent / intent_rationale 은 지난 생성 때 파악한 의도다. 결과값에 함께 표시된다.
-        """
+        """2단계 — 이 PC 에서 돌린 실행 결과를 보내 리포트를 받는다."""
         return self._call(
-            "execute_tests",
+            "report_execution",
             {
                 "project_id": project_id,
+                "execution": execution,
                 "test_code": test_code,
-                "sources": sources,
-                "base_package": base_package,
                 "diff": diff,
+                "sources": sources or [],
                 "intent": intent,
                 "intent_rationale": intent_rationale,
             },
