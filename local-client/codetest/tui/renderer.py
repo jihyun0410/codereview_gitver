@@ -11,13 +11,15 @@ TUI 렌더러.
 
   (1) TEST CODE '보기'        → **생성된 test.txt 를 연다** (클릭 또는 [c])
                                 작성 근거(사고의 사슬 · 정상/실패 케이스)는 터미널에 함께 출력
-  (2) 'TEST RESULT 상세 보기' → 결과 값 + 적절성 판단 결과와 근거
+  (2) 'TEST RESULT 상세 보기' → **test-result.txt 를 연다** (클릭 또는 [r])
+                                결과 값 + 적절성 판단 결과와 근거
                                 + 파악한 변경 의도와 근거  (정의서 (2))
   (3) 기능 중요도             → HIGH / MID / LOW **와 그렇게 판단한 근거**
 
-'보기' 는 파일 링크(OSC 8)로 그린다. IntelliJ 터미널·Windows Terminal 등에서는
-그대로 클릭하면 test.txt 가 열리고, 링크를 지원하지 않는 터미널에서는 아래
-선택 프롬프트의 [c] 로 같은 파일을 연다.
+두 '보기' 는 **똑같이 동작한다** — 파일 링크(OSC 8)로 그려서, IntelliJ 터미널·
+Windows Terminal 등에서는 클릭하면 해당 파일이 열린다. 링크를 지원하지 않는
+터미널에서는 아래 선택 프롬프트의 [c] / [r] 로 같은 파일을 연다. 파일을 아예
+열 수 없는 환경(원격 셸 등)에서만 내용을 터미널에 대신 출력한다.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unicodedata import east_asian_width
 
 from rich.console import Console
 from rich.panel import Panel
@@ -125,12 +128,15 @@ def print_report(
     importance_rationale: str = "",
     test_file: Path | None = None,
     has_detail: bool = True,
+    result_file: Path | None = None,
 ) -> None:
     """정의서에 명시된 결과 표를 출력한다.
 
     :param importance_rationale: 중요도를 그렇게 판단한 근거. 등급 바로 아래에 붙는다.
-    :param test_file: 생성된 Test Code 파일(`src/test/test.txt`).
-                      주어지면 'TEST CODE' 의 '보기' 가 이 파일을 여는 링크가 된다.
+    :param test_file:   생성된 Test Code 파일(`src/test/test.txt`).
+                        주어지면 'TEST CODE' 의 '보기' 가 이 파일을 여는 링크가 된다.
+    :param result_file: 실행 결과 상세 파일(`src/test/test-result.txt`).
+                        주어지면 'TEST RESULT 상세 보기' 도 같은 방식의 링크가 된다.
     """
     table = Table(show_header=False, box=None, pad_edge=False)
     table.add_column("항목", style="bold", width=22)
@@ -152,18 +158,22 @@ def print_report(
             "TEST RESULT",
             Text(test_result, style=RESULT_STYLE.get(test_result.upper(), "white")),
         )
-    table.add_row(
-        "TEST RESULT 상세 보기",
-        Text("보기", style="cyan underline") if has_detail else "-",
-    )
+    if not has_detail:
+        table.add_row("TEST RESULT 상세 보기", Text("-", style="dim"))
+    elif result_file is not None:
+        table.add_row("TEST RESULT 상세 보기", _view_link(result_file))
+    else:
+        # 파일로 남기지 못한 경우 — 클릭은 안 되지만 [r] 로는 볼 수 있다
+        table.add_row("TEST RESULT 상세 보기", Text("보기", style="cyan underline"))
 
     console.print()
     console.print(Panel(table, border_style="cyan"))
 
-    if test_file is not None:
-        console.print(
-            f"[dim]TEST CODE '보기' 를 클릭하면 {test_file} 를 엽니다.[/]", soft_wrap=True
-        )
+    for label, path in (("TEST CODE", test_file), ("TEST RESULT 상세", result_file)):
+        if path is not None:
+            console.print(
+                f"[dim]{label} '보기' 를 클릭하면 {path} 를 엽니다.[/]", soft_wrap=True
+            )
 
 
 def _rationale_text(rationale: str) -> Text:
@@ -174,39 +184,39 @@ def _rationale_text(rationale: str) -> Text:
     return Text(cleaned, style="dim")
 
 
-def _view_link(test_file: Path | None) -> Text:
+def _view_link(path: Path | None) -> Text:
     """
-    'TEST CODE' 의 '보기'.
+    표의 '보기' 한 칸. TEST CODE 와 TEST RESULT 상세가 같은 함수를 쓴다.
 
-    파일 경로를 알면 OSC 8 하이퍼링크로 그려 **클릭하면 test.txt 가 열리게** 한다.
-    (IntelliJ 터미널·Windows Terminal 등이 지원한다. 미지원 터미널은 [c] 로 연다.)
+    파일 경로를 알면 OSC 8 하이퍼링크로 그려 **클릭하면 그 파일이 열리게** 한다.
+    (IntelliJ 터미널·Windows Terminal 등이 지원한다. 미지원 터미널은 [c]/[r] 로 연다.)
     """
-    if test_file is None:
+    if path is None:
         return Text("-", style="dim")
     try:
-        uri = test_file.resolve().as_uri()
+        uri = path.resolve().as_uri()
     except (OSError, ValueError):
         return Text("보기", style="cyan underline")
     return Text("보기", style=f"cyan underline link {uri}")
 
 
-def open_test_file(test_file: Path) -> bool:
+def open_file(path: Path) -> bool:
     """
-    생성된 test.txt 를 OS 기본 프로그램으로 연다.
+    파일을 OS 기본 프로그램으로 연다 (test.txt / test-result.txt 공용).
 
     '보기' 클릭을 지원하지 않는 터미널에서 같은 동작을 하는 경로다.
     열지 못하면 False 를 돌려 호출하는 쪽이 터미널 출력으로 대신하게 한다.
     """
-    if not test_file.is_file():
+    if not path.is_file():
         return False
     try:
         if sys.platform.startswith("win"):
-            os.startfile(str(test_file))  # type: ignore[attr-defined]  # Windows 전용
+            os.startfile(str(path))  # type: ignore[attr-defined]  # Windows 전용
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(test_file)])
+            subprocess.Popen(["open", str(path)])
         else:
             subprocess.Popen(
-                ["xdg-open", str(test_file)],
+                ["xdg-open", str(path)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -234,7 +244,7 @@ def print_test_code(
     """
     console.print()
 
-    opened = test_file is not None and open_test_file(test_file)
+    opened = test_file is not None and open_file(test_file)
     if opened:
         print_success(f"Test Code 파일을 열었습니다: {test_file}")
 
@@ -268,15 +278,25 @@ def print_test_code(
     )
 
 
-def print_result_detail(report: dict) -> None:
+def print_result_detail(report: dict, result_file: Path | None = None) -> None:
     """
     (2) 'TEST RESULT 상세 보기'.
+
+    TEST CODE '보기' 와 똑같이 **파일을 연다.** 열리면 화면에 다시 찍지 않는다.
+    파일을 열 수 없는 환경(원격 셸 등)에서만 아래 패널로 대신 보여 준다.
 
     정의서: "결과 값을 보여주고 적절성 여부에 대한 판단 결과, 근거 또한 보여줌"
             "파악한 의도와 근거에 대한 내용을 <Test Result 보기>의 결과값에 넣는다"
     """
-    result = report.get("result", "")
     console.print()
+
+    if result_file is not None and open_file(result_file):
+        print_success(f"결과 상세 파일을 열었습니다: {result_file}")
+        return
+    if result_file is not None:
+        print_warning(f"파일을 열 수 없어 화면에 출력합니다: {result_file}")
+
+    result = report.get("result", "")
     console.print(
         Panel(
             Text(result or "-", style=RESULT_STYLE.get(result.upper(), "white")),
@@ -321,47 +341,104 @@ def print_result_detail(report: dict) -> None:
     )
 
 
-def _summary_table(report: dict) -> Table:
-    """실행 집계 · @SpringBootTest 적용 여부 · JaCoCo 커버리지."""
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column("항목", style="bold", width=22)
-    table.add_column("값", overflow="fold")
+def _summary_rows(report: dict) -> list[tuple[str, str, str]]:
+    """실행 집계 · @SpringBootTest 적용 여부 · JaCoCo 커버리지 → (항목, 값, 색).
 
-    table.add_row(
-        "테스트",
-        f"총 {report.get('total', 0)} / 성공 {report.get('passed', 0)} "
-        f"/ 실패 {report.get('failed', 0)} / 건너뜀 {report.get('skipped', 0)}",
-    )
-    table.add_row("gradle exit code", str(report.get("exit_code", "-")))
+    터미널 표와 test-result.txt 가 같은 목록을 쓴다. 한쪽만 고쳐 두 화면의
+    내용이 갈라지는 일을 막는다.
+    """
+    rows: list[tuple[str, str, str]] = [
+        (
+            "테스트",
+            (
+                f"총 {report.get('total', 0)} / 성공 {report.get('passed', 0)} "
+                f"/ 실패 {report.get('failed', 0)} / 건너뜀 {report.get('skipped', 0)}"
+            ),
+            "",
+        ),
+        ("gradle exit code", str(report.get("exit_code", "-")), ""),
+    ]
 
-    applied = report.get("springboot_applied")
-    table.add_row(
-        "@SpringBootTest",
-        Text("적용됨", style="green") if applied else Text("미적용", style="red"),
-    )
+    if report.get("springboot_applied"):
+        rows.append(("@SpringBootTest", "적용됨", "green"))
+    else:
+        rows.append(("@SpringBootTest", "미적용", "red"))
+
     if report.get("test_file_path"):
-        table.add_row("실행 파일", report["test_file_path"])
+        rows.append(("실행 파일", report["test_file_path"], ""))
 
     coverage = report.get("coverage")
     if coverage:
-        table.add_row(
+        covered = coverage.get("line_covered", 0)
+        rows.append((
             "JaCoCo 커버리지",
-            f"라인 {coverage.get('line_rate')}% "
-            f"({coverage.get('line_covered')}/"
-            f"{coverage.get('line_covered', 0) + coverage.get('line_missed', 0)}), "
-            f"분기 {coverage.get('branch_rate')}%",
-        )
+            (
+                f"라인 {coverage.get('line_rate')}% "
+                f"({covered}/{covered + coverage.get('line_missed', 0)}), "
+                f"분기 {coverage.get('branch_rate')}%"
+            ),
+            "",
+        ))
     elif report.get("jacoco_enabled"):
         # 테스트가 실패하면 gradle 이 jacocoTestReport 까지 가지 않는다.
-        table.add_row(
-            "JaCoCo", Text("리포트 없음 (테스트 실패로 커버리지 미집계)", style="yellow")
-        )
+        rows.append(("JaCoCo", "리포트 없음 (테스트 실패로 커버리지 미집계)", "yellow"))
     else:
-        table.add_row("JaCoCo", Text("프로젝트 build 설정에 미적용", style="yellow"))
+        rows.append(("JaCoCo", "프로젝트 build 설정에 미적용", "yellow"))
 
     for note in report.get("applied") or []:
-        table.add_row("주입 작업", note)
+        rows.append(("주입 작업", note, ""))
+    return rows
+
+
+def _summary_table(report: dict) -> Table:
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column("항목", style="bold", width=22)
+    table.add_column("값", overflow="fold")
+    for label, value, style in _summary_rows(report):
+        table.add_row(label, Text(value, style=style) if style else value)
     return table
+
+
+def render_result_detail(report: dict) -> str:
+    """'TEST RESULT 상세 보기' 가 여는 test-result.txt 의 본문.
+
+    화면과 같은 항목을 담되 **실행 출력은 자르지 않는다** — 터미널에서는 길이
+    때문에 잘라야 하지만, 파일로 여는 편을 택한 이유가 바로 그것이다.
+    """
+    def section(title: str, body: str) -> str:
+        return f"[{title}]\n{(body or '-').strip()}\n"
+
+    parts = [
+        "=" * 72,
+        " TEST RESULT 상세",
+        "=" * 72,
+        "",
+        f"TEST RESULT : {report.get('result') or '-'}",
+        "",
+        section(
+            "변경 의도와 근거",
+            f"의도: {report.get('intent') or '-'}\n"
+            f"{(report.get('intent_rationale') or '-').strip()}",
+        ),
+        "[결과 값]",
+        *(f"{_pad(label, 18)}: {value}" for label, value, _ in _summary_rows(report)),
+        "",
+    ]
+
+    failures = report.get("failures") or []
+    if failures:
+        parts.append(section("실패 내역", "\n".join(f"- {item}" for item in failures)))
+    if report.get("details"):
+        parts.append(section("결과 상세", report["details"]))
+    if report.get("output"):
+        parts.append(section("실행 출력", report["output"]))
+
+    parts.append(section(
+        "적절성 판단 결과 및 근거",
+        f"판단: {report.get('verdict') or '-'}\n"
+        f"{(report.get('verdict_rationale') or '-').strip()}",
+    ))
+    return "\n".join(parts).rstrip() + "\n"
 
 
 def prompt_view(has_test_code: bool, has_detail: bool) -> str | None:
@@ -379,7 +456,7 @@ def prompt_view(has_test_code: bool, has_detail: bool) -> str | None:
     if has_test_code:
         options.append("[c] TEST CODE 보기 (test.txt 열기)")
     if has_detail:
-        options.append("[r] TEST RESULT 상세 보기")
+        options.append("[r] TEST RESULT 상세 보기 (test-result.txt 열기)")
     if not options:
         return None
     options.append("[q] 종료")
@@ -390,6 +467,16 @@ def prompt_view(has_test_code: bool, has_detail: bool) -> str | None:
     except (EOFError, KeyboardInterrupt):
         return None
     return choice or None
+
+
+def _pad(label: str, width: int) -> str:
+    """표시 폭 기준으로 오른쪽을 채운다.
+
+    f"{label:<18}" 은 **글자 수**로 채우는데 한글은 터미널에서 두 칸을 차지한다.
+    그대로 두면 '테스트' 와 'gradle exit code' 의 콜론이 어긋나 파일이 지저분해진다.
+    """
+    span = sum(2 if east_asian_width(char) in "WF" else 1 for char in label)
+    return label + " " * max(width - span, 0)
 
 
 def _plain(text: str, limit: int = 4000) -> Text:

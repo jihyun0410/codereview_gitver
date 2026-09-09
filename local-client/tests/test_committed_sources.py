@@ -9,7 +9,9 @@ import pytest
 
 from codetest.git_local import (
     MAX_SNAPSHOT_FILES,
+    collect_changes,
     collect_committed_files,
+    is_agent_artifact,
 )
 
 
@@ -112,3 +114,41 @@ def test_warns_when_total_size_exceeds_the_cap(repo):
 
 def test_default_caps_are_sane():
     assert MAX_SNAPSHOT_FILES >= 100
+
+
+# --- 자기 오염 방지 --------------------------------------------------------------
+def test_agent_outputs_are_never_treated_as_source():
+    """에이전트가 만든 파일이 다음 실행의 '변경된 소스' 로 잡히면 안 된다.
+
+    test.txt 는 생성한 Test Code, test-result.txt 는 실행 결과 상세다. 둘 다
+    사용자가 고친 코드가 아니므로 diff·스냅샷 어느 쪽에도 실리면 안 된다.
+    """
+    assert is_agent_artifact("src/test/test.txt")
+    assert is_agent_artifact("src/test/test-result.txt")
+    assert is_agent_artifact(".codetest/last_test.json")
+    assert is_agent_artifact("src\\test\\test-result.txt")     # Windows 경로 구분자
+
+    assert not is_agent_artifact("src/main/java/com/example/demo/OrderService.java")
+    assert not is_agent_artifact("src/test/java/com/example/demo/OrderServiceTest.java")
+
+
+def test_the_result_file_never_reaches_the_llm(repo):
+    """test-result.txt 는 우리가 쓴 파일이다 — diff 에도 소스 목록에도 없어야 한다."""
+    _write(repo, "src/main/java/A.java", "class A {}")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "init")
+
+    _write(repo, "src/main/java/A.java", "class A { int x; }")     # 사용자의 진짜 변경
+    _write(repo, "src/test/test-result.txt", "TEST RESULT : PASS")  # 지난 실행의 산출물
+    _write(repo, "src/test/test.txt", "class GeneratedTest {}")
+
+    changes = collect_changes("worktree", repo)
+    paths = {item.path for item in changes.files}
+
+    assert "src/main/java/A.java" in paths
+    assert "src/test/test-result.txt" not in paths
+    assert "src/test/test.txt" not in paths
+    assert "TEST RESULT : PASS" not in changes.diff
+
+    collected, _ = collect_committed_files(repo)
+    assert "src/test/test-result.txt" not in dict(collected)

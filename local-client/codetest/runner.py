@@ -11,6 +11,9 @@ Test Code 저장 / 조회.
 
 실행에 필요한 부가 정보(파악한 의도, 기준 패키지 등)는 `.codetest/last_test.json`
 에 함께 남겨 `codetest test` 가 test.txt 만으로도 같은 맥락에서 실행되게 한다.
+
+실행 결과 상세는 `src/test/test-result.txt` 로 남긴다 — 결과 화면의
+'TEST RESULT 상세 보기' 가 여는 파일이다.
 """
 
 from __future__ import annotations
@@ -19,6 +22,9 @@ import json
 from pathlib import Path
 
 TEST_FILE = Path("src") / "test" / "test.txt"
+#: 'TEST RESULT 상세 보기' 가 여는 파일. test.txt 와 같은 자리에 둬서
+#: 두 '보기' 가 똑같이 "파일을 연다" 로 동작하게 한다.
+RESULT_FILE = Path("src") / "test" / "test-result.txt"
 META_FILE = Path(".codetest") / "last_test.json"
 
 #: 메타가 없을 때 쓰는 기본값
@@ -44,6 +50,14 @@ def save_test(repo_root: Path, test_code: str, meta: dict) -> Path:
     meta_path = repo_root / META_FILE
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def save_result(repo_root: Path, detail: str) -> Path:
+    """실행 결과 상세를 test-result.txt 로 남기고 그 경로를 돌려준다."""
+    path = repo_root / RESULT_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(detail, encoding="utf-8")
     return path
 
 

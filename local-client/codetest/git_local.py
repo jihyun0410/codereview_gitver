@@ -29,6 +29,7 @@ SCOPES: dict[str, tuple[list[str], bool]] = {
 AGENT_ARTIFACTS: tuple[str, ...] = (
     ".codetest/",
     "src/test/test.txt",
+    "src/test/test-result.txt",
 )
 
 

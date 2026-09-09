@@ -255,7 +255,7 @@ def run(
     report = _execute_locally(
         repo_root, client, project_id, generated, diff, sources, gradle, timeout
     )
-    _show(generated, report, saved)
+    _show(generated, report, saved, _save_result(repo_root, report))
 
 
 @app.command("generate")
@@ -320,7 +320,10 @@ def test(
         repo_root, client, project_id, {**meta, "test_code": test_code},
         diff, sources, gradle, timeout,
     )
-    _show({**meta, "test_code": test_code}, report, repo_root / runner.TEST_FILE)
+    _show(
+        {**meta, "test_code": test_code}, report,
+        repo_root / runner.TEST_FILE, _save_result(repo_root, report),
+    )
 
 
 # ===========================================================================
@@ -341,11 +344,33 @@ def _save(repo_root: Path, generated: dict) -> Path:
     return saved
 
 
-def _show(generated: dict, report: dict | None, test_file: Path) -> None:
+def _save_result(repo_root: Path, report: dict) -> Path | None:
+    """실행 결과 상세를 src/test/test-result.txt 로 남기고 그 경로를 돌려준다.
+
+    결과 화면의 'TEST RESULT 상세 보기' 가 여는 파일이다. 저장에 실패해도
+    실행 자체는 끝난 상태이므로 경고만 남기고 진행한다 — 그때는 '보기' 가
+    파일 대신 터미널 출력으로 넘어간다.
+    """
+    try:
+        saved = runner.save_result(repo_root, ui.render_result_detail(report))
+    except OSError as exc:
+        ui.print_warning(f"결과 상세 파일을 저장하지 못했습니다: {exc}")
+        return None
+    ui.print_success(f"결과 상세 저장: {saved.relative_to(repo_root).as_posix()}")
+    return saved
+
+
+def _show(
+    generated: dict,
+    report: dict | None,
+    test_file: Path,
+    result_file: Path | None = None,
+) -> None:
     """정의서 [결과 양식] 출력 + '보기' 선택 루프.
 
-    'TEST CODE 보기' 는 화면에 코드를 찍는 대신 **test_file(src/test/test.txt)을 연다.**
-    표의 '보기' 는 이 파일을 가리키는 링크라 클릭만으로 같은 동작을 한다.
+    두 '보기' 가 똑같이 동작한다 — 화면에 내용을 찍는 대신 각각
+    `src/test/test.txt` 와 `src/test/test-result.txt` 를 연다. 표의 '보기' 는 그
+    파일을 가리키는 링크라 클릭만으로 같은 동작을 한다.
     """
     # `codetest test` 는 generated 가 로컬 캐시(.codetest/last_test.json)라 값이 낡았다.
     # 이번 실행에서 MCP 가 판단한 중요도가 report 에 있으면 그것을 쓴다.
@@ -359,6 +384,7 @@ def _show(generated: dict, report: dict | None, test_file: Path) -> None:
         importance_rationale=rationale,
         test_file=test_file,
         has_detail=report is not None,
+        result_file=result_file,
     )
 
     while True:
@@ -373,7 +399,7 @@ def _show(generated: dict, report: dict | None, test_file: Path) -> None:
                 test_file=test_file,
             )
         elif choice == "r" and report is not None:
-            ui.print_result_detail(report)
+            ui.print_result_detail(report, result_file)
         else:
             break
 

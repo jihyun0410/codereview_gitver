@@ -69,10 +69,67 @@ def test_view_choice_opens_the_saved_file(monkeypatch, tmp_path):
     opened: list[Path] = []
 
     monkeypatch.setattr(cli.ui, "print_report", lambda *a, **kw: None)
-    monkeypatch.setattr(ui, "open_test_file", lambda path: opened.append(path) or True)
+    monkeypatch.setattr(ui, "open_file", lambda path: opened.append(path) or True)
     choices = iter(["c", None])
     monkeypatch.setattr(cli.ui, "prompt_view", lambda **kw: next(choices))
 
     cli._show(GENERATED, report=None, test_file=test_file)
 
     assert opened == [test_file]
+
+
+# --- 'TEST RESULT 상세 보기' 도 파일 열기다 --------------------------------------
+REPORT = {
+    "result": "PASS", "importance": "MID", "importance_rationale": "- 이번 실행 근거",
+    "intent": "조건 변경", "verdict": "적절", "verdict_rationale": "- 경계값 검증됨",
+    "total": 1, "passed": 1, "failed": 0, "skipped": 0, "exit_code": 0,
+}
+
+
+def test_detail_choice_opens_the_result_file(monkeypatch, tmp_path):
+    """[r] 은 화면 출력이 아니라 test-result.txt 열기로 이어진다."""
+    result_file = tmp_path / "test-result.txt"
+    result_file.write_text("상세", encoding="utf-8")
+    opened: list[Path] = []
+
+    monkeypatch.setattr(cli.ui, "print_report", lambda *a, **kw: None)
+    monkeypatch.setattr(ui, "open_file", lambda path: opened.append(path) or True)
+    choices = iter(["r", None])
+    monkeypatch.setattr(cli.ui, "prompt_view", lambda **kw: next(choices))
+
+    cli._show(GENERATED, report=REPORT, test_file=tmp_path / "test.txt",
+              result_file=result_file)
+
+    assert opened == [result_file]
+
+
+def test_report_screen_gets_the_result_file(captured, tmp_path):
+    result_file = tmp_path / "test-result.txt"
+    cli._show(GENERATED, report=REPORT, test_file=tmp_path / "test.txt",
+              result_file=result_file)
+
+    assert captured["result_file"] == result_file
+    assert captured["has_detail"] is True
+
+
+def test_generate_has_no_result_file(captured, tmp_path):
+    """실행하지 않았으므로 상세 보기 대상 자체가 없다."""
+    cli._show(GENERATED, report=None, test_file=tmp_path / "test.txt")
+    assert captured["result_file"] is None
+
+
+def test_save_result_writes_the_file(tmp_path):
+    saved = cli._save_result(tmp_path, REPORT)
+
+    assert saved is not None
+    assert saved == tmp_path / "src" / "test" / "test-result.txt"
+    assert "TEST RESULT : PASS" in saved.read_text(encoding="utf-8")
+
+
+def test_save_result_survives_a_write_failure(tmp_path, monkeypatch):
+    """저장에 실패해도 실행은 이미 끝났다 — 경고만 남기고 진행한다."""
+    def _boom(*args, **kwargs):
+        raise OSError("디스크 없음")
+
+    monkeypatch.setattr(cli.runner, "save_result", _boom)
+    assert cli._save_result(tmp_path, REPORT) is None
