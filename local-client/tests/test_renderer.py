@@ -279,3 +279,66 @@ def test_result_file_columns_line_up_with_korean_labels():
         if ":" in line and not line.startswith("[")
     }
     assert len(columns) == 1, f"콜론 위치가 어긋난다: {columns}"
+
+
+# --- 빌드 실패는 테스트 실패와 다르게 보여야 한다 ----------------------------------
+#
+# 컴파일이 깨지면 집계가 전부 0 이라 "실패 0건인데 FAIL" 로 읽힌다.
+# 왜 FAIL 인지가 화면과 파일 양쪽에 남아야 한다.
+BUILD_FAILED = {
+    "result": "FAIL", "exit_code": 1,
+    "total": 0, "passed": 0, "failed": 0, "skipped": 0,
+    "springboot_applied": True, "jacoco_enabled": True,
+    "build_errors": [
+        "OrderTotalFlowIntegrationTest.java:52: not a statement",
+        "OrderTotalFlowIntegrationTest.java:78: method endpointTotal() is already defined",
+    ],
+    "intent": "기능 추가", "verdict": "부적절",
+    "verdict_rationale": "- 컴파일되지 않아 한 건도 실행되지 않았다",
+}
+
+
+def test_summary_leads_with_the_build_failure():
+    labels = [label for label, _, _ in ui._summary_rows(BUILD_FAILED)]
+    assert labels[0] == "빌드", "왜 FAIL 인지가 집계보다 먼저 보여야 한다"
+
+    value = next(v for label, v, _ in ui._summary_rows(BUILD_FAILED) if label == "빌드")
+    assert "한 건도 실행되지 않았습니다" in value
+
+
+def test_a_normal_run_has_no_build_row():
+    assert "빌드" not in [label for label, _, _ in ui._summary_rows(REPORT)]
+
+
+def test_test_failures_are_not_called_a_build_failure():
+    """테스트가 돌아서 깨진 것은 빌드 실패가 아니다."""
+    failed_run = {**REPORT, "result": "FAIL", "exit_code": 1, "failed": 1, "passed": 2}
+    assert ui._build_failed(failed_run) is False
+    assert "빌드" not in [label for label, _, _ in ui._summary_rows(failed_run)]
+
+
+def test_build_failure_is_detected_without_an_error_list():
+    """오류 문구를 못 뽑았어도 'exit≠0 인데 실행 0건' 이면 빌드 실패다."""
+    assert ui._build_failed({"exit_code": 1, "total": 0}) is True
+    assert ui._build_failed({"exit_code": 0, "total": 0}) is False
+
+
+def test_result_file_separates_build_errors_from_test_failures():
+    text = ui.render_result_detail(BUILD_FAILED)
+
+    assert "[빌드 오류 (테스트 실패가 아님)]" in text
+    assert "OrderTotalFlowIntegrationTest.java:52: not a statement" in text
+    assert "한 건도 실행되지 않았습니다" in text
+    assert "[실패 내역]" not in text          # 테스트가 안 돌았으니 실패 내역도 없다
+
+
+def test_terminal_detail_shows_the_build_errors(monkeypatch):
+    console = Console(force_terminal=True, width=120, record=True)
+    monkeypatch.setattr(ui, "console", console)
+    monkeypatch.setattr(ui, "open_file", lambda p: False)
+
+    ui.print_result_detail(BUILD_FAILED)
+    out = console.export_text()
+
+    assert "빌드 오류" in out
+    assert "not a statement" in out

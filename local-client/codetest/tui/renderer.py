@@ -318,6 +318,24 @@ def print_result_detail(report: dict, result_file: Path | None = None) -> None:
     # --- 실행 집계 + JaCoCo ---
     console.print(Panel(_summary_table(report), title="[bold]결과 값[/]", border_style="blue"))
 
+    build_errors = report.get("build_errors") or []
+    if build_errors:
+        console.print(
+            Panel(
+                _plain("\n".join(f"- {item}" for item in build_errors)),
+                title="[bold]빌드 오류 (테스트 실패가 아님)[/]",
+                border_style="red",
+            )
+        )
+    elif _build_failed(report):
+        console.print(
+            Panel(
+                _plain("gradle 이 0 이 아닌 코드로 끝났지만 실행된 테스트가 없습니다.\n"
+                       "아래 '실행 출력' 에서 원인을 확인하세요."),
+                title="[bold]빌드 실패[/]", border_style="red",
+            )
+        )
+
     failures = report.get("failures") or []
     if failures:
         console.print(
@@ -347,7 +365,16 @@ def _summary_rows(report: dict) -> list[tuple[str, str, str]]:
     터미널 표와 test-result.txt 가 같은 목록을 쓴다. 한쪽만 고쳐 두 화면의
     내용이 갈라지는 일을 막는다.
     """
-    rows: list[tuple[str, str, str]] = [
+    rows: list[tuple[str, str, str]] = []
+
+    # 컴파일이 깨지면 테스트가 시작조차 못해 집계가 전부 0 이 된다.
+    # "실패 0건인데 FAIL" 로 읽히지 않도록 이유를 맨 위에 박는다.
+    if _build_failed(report):
+        rows.append((
+            "빌드", "실패 — 테스트가 한 건도 실행되지 않았습니다", "bold red",
+        ))
+
+    rows += [
         (
             "테스트",
             (
@@ -390,6 +417,17 @@ def _summary_rows(report: dict) -> list[tuple[str, str, str]]:
     return rows
 
 
+def _build_failed(report: dict) -> bool:
+    """테스트가 시작도 못했는가 (컴파일 오류 등).
+
+    gradle 이 컴파일 단계에서 멈추면 exit code 만 1 이고 집계는 전부 0 이다.
+    그 상태를 '실패 0건' 으로만 보여 주면 왜 FAIL 인지 알 수가 없다.
+    """
+    return bool(report.get("build_errors")) or (
+        int(report.get("exit_code") or 0) != 0 and int(report.get("total") or 0) == 0
+    )
+
+
 def _summary_table(report: dict) -> Table:
     table = Table(show_header=False, box=None, pad_edge=False)
     table.add_column("항목", style="bold", width=22)
@@ -424,6 +462,14 @@ def render_result_detail(report: dict) -> str:
         *(f"{_pad(label, 18)}: {value}" for label, value, _ in _summary_rows(report)),
         "",
     ]
+
+    build_errors = report.get("build_errors") or []
+    if build_errors:
+        parts.append(section(
+            "빌드 오류 (테스트 실패가 아님)",
+            "테스트가 한 건도 실행되지 않았습니다. 아래를 고친 뒤 다시 실행하세요.\n"
+            + "\n".join(f"- {item}" for item in build_errors),
+        ))
 
     failures = report.get("failures") or []
     if failures:

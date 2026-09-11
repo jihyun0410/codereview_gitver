@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -28,6 +29,11 @@ _BUILD_FILES = ("build.gradle", "build.gradle.kts", "pom.xml")
 
 #: gradle 출력이 리포트에 통째로 실리지 않도록 자른다
 _OUTPUT_LIMIT = 20_000
+
+#: javac 오류 한 줄: `/경로/Foo.java:52: error: not a statement`
+_JAVAC_ERROR = re.compile(r"^(?P<file>\S+\.(?:java|kt)):(?P<line>\d+):\s*(?:error|오류):\s*(?P<message>.+)$")
+#: 컴파일 외의 실패 이유는 gradle 이 이 블록에 적는다
+_WHAT_WENT_WRONG = re.compile(r"^\* What went wrong:\s*$")
 
 
 class ExecutionError(RuntimeError):
@@ -74,6 +80,17 @@ class ExecutionResult:
     applied: list[str] = field(default_factory=list)
     test_file_path: str = ""
     command: list[str] = field(default_factory=list)
+    #: 테스트가 시작조차 못한 이유 (컴파일 오류 등). 테스트 실패와는 다르다.
+    build_errors: list[str] = field(default_factory=list)
+
+    @property
+    def tests_ran(self) -> bool:
+        """이번 실행에서 테스트가 실제로 돌았는가.
+
+        gradle 이 컴파일 단계에서 멈추면 exit code 만 1 이고 집계는 전부 0 이다.
+        '실패 0건인데 FAIL' 로 보이는 상태를 이 값으로 구분한다.
+        """
+        return self.total > 0
 
     def to_dict(self) -> dict:
         return {
@@ -90,6 +107,7 @@ class ExecutionResult:
             "applied": self.applied,
             "test_file_path": self.test_file_path,
             "command": self.command,
+            "build_errors": self.build_errors,
         }
 
 
@@ -119,6 +137,12 @@ def run_tests(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(test_source, encoding="utf-8")
 
+        class_name = _class_name(test_file_path)
+        # 지난 실행이 남긴 리포트를 먼저 치운다. 안 그러면 이번에 컴파일이 깨져
+        # 테스트가 한 건도 안 돌아도 옛 XML 이 그대로 집계돼
+        # "FAIL 인데 총 3 / 성공 3" 같은 리포트가 나온다.
+        _clear_stale_reports(repo_root, class_name)
+
         command = _build_command(repo_root, test_file_path, gradle_command)
         returncode, output = _run(command, repo_root, timeout)
 
@@ -131,8 +155,11 @@ def run_tests(
             command=command,
             jacoco_enabled=_has_jacoco(repo_root),
         )
-        _collect_junit(repo_root, result)
+        _collect_junit(repo_root, result, class_name)
         _collect_jacoco(repo_root, result)
+        if returncode != 0 and not result.tests_ran:
+            # 테스트가 시작조차 못했다 — 왜 FAIL 인지 출력에서 찾아 남긴다.
+            result.build_errors = _build_errors(output)
         return result
     finally:
         # 실제 작업 트리다. 우리가 만든 것만 되돌린다.
@@ -209,13 +236,18 @@ def _has_jacoco(repo_root: Path) -> bool:
 # ---------------------------------------------------------------------------
 #  결과 수집
 # ---------------------------------------------------------------------------
-def _collect_junit(repo_root: Path, result: ExecutionResult) -> None:
-    """build/test-results/test/*.xml 을 합산한다."""
+def _collect_junit(repo_root: Path, result: ExecutionResult, class_name: str) -> None:
+    """이번에 돌린 클래스의 build/test-results/test/*.xml 만 합산한다.
+
+    디렉터리에 있는 XML 을 전부 더하면 우리가 돌리지도 않은 다른 테스트 클래스의
+    지난 결과까지 이번 실행의 집계로 둔갑한다 (`--tests *<클래스>` 로 한 클래스만
+    돌리므로 나머지는 갱신되지도 않는다).
+    """
     results_dir = repo_root / _JUNIT_DIR
     if not results_dir.is_dir():
         return
 
-    for xml_file in sorted(results_dir.glob("TEST-*.xml")):
+    for xml_file in sorted(_report_files(results_dir, class_name)):
         try:
             root = ET.parse(xml_file).getroot()
         except (ET.ParseError, OSError):
@@ -244,6 +276,50 @@ def _collect_junit(repo_root: Path, result: ExecutionResult) -> None:
     result.passed = max(result.total - result.failed - result.skipped, 0)
 
 
+def _report_files(results_dir: Path, class_name: str) -> list[Path]:
+    """`TEST-<패키지>.<클래스>.xml` 중 이번에 돌린 클래스의 것만 고른다.
+
+    중첩 클래스(`Outer$Inner`)도 같은 실행의 산출물이므로 함께 센다.
+    """
+    matched: list[Path] = []
+    for xml_file in results_dir.glob("TEST-*.xml"):
+        simple = xml_file.stem[len("TEST-"):].rsplit(".", 1)[-1]
+        if simple == class_name or simple.startswith(f"{class_name}$"):
+            matched.append(xml_file)
+    return matched
+
+
+def _build_errors(output: str) -> list[str]:
+    """테스트가 시작도 못한 이유를 gradle 출력에서 뽑는다.
+
+    컴파일 오류가 있으면 그것을, 없으면 gradle 의 '* What went wrong' 블록을 쓴다.
+    이게 없으면 리포트에 "실패 0건인데 FAIL" 만 남아 원인을 알 수 없다.
+    """
+    compile_errors: list[str] = []
+    for line in output.splitlines():
+        match = _JAVAC_ERROR.match(line.strip())
+        if match:
+            name = Path(match.group("file")).name
+            compile_errors.append(
+                f"{name}:{match.group('line')}: {match.group('message').strip()}"[:500]
+            )
+    if compile_errors:
+        return compile_errors[:20]
+
+    reasons: list[str] = []
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        if not _WHAT_WENT_WRONG.match(line.strip()):
+            continue
+        for following in lines[index + 1:]:
+            stripped = following.strip()
+            if not stripped or stripped.startswith("*"):
+                break
+            reasons.append(stripped[:500])
+        break
+    return reasons[:20]
+
+
 def _collect_jacoco(repo_root: Path, result: ExecutionResult) -> None:
     report = repo_root / _JACOCO_XML
     if not report.is_file():
@@ -267,6 +343,22 @@ def _collect_jacoco(repo_root: Path, result: ExecutionResult) -> None:
 # ---------------------------------------------------------------------------
 #  파일 조작
 # ---------------------------------------------------------------------------
+def _clear_stale_reports(repo_root: Path, class_name: str) -> None:
+    """이번에 갱신될 리포트만 미리 지운다.
+
+    사용자의 실제 작업 트리이므로 `build/` 를 통째로 날리지 않는다. 우리가 돌릴
+    클래스의 JUnit XML 과, 이번 실행이 다시 만들 JaCoCo 리포트만 치운다.
+    """
+    results_dir = repo_root / _JUNIT_DIR
+    targets = _report_files(results_dir, class_name) if results_dir.is_dir() else []
+    targets.append(repo_root / _JACOCO_XML)
+    for path in targets:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass          # 지우지 못해도 실행은 계속한다 (집계가 낡을 뿐)
+
+
 def _safe_target(repo_root: Path, relative_path: str) -> Path:
     """프로젝트 안쪽에만 쓴다 (`..`/심볼릭 링크로 밖을 건드리지 못하게)."""
     root = repo_root.resolve()
