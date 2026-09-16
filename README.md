@@ -137,6 +137,28 @@ Agent 에 넘깁니다.
 | `CODETEST_SERVER_URL` | (config.py 기본값) | MCP 엔드포인트 주소 |
 | `CODETEST_API_KEY` | (없음) | MCP 인증 키 (`X-API-Key`) |
 
+## 연결이 끊길 때
+
+    RemoteProtocolError: peer closed connection without sending complete
+    message body (incomplete chunked read)
+
+"서버가 응답 본문을 끝맺지 않고 연결을 닫았다" 는 뜻입니다. 보낸 요청이 틀려서가
+아니라 **상대가 중간에 사라진 것**이라, CLI 에서 고칠 수 있는 값은 없습니다.
+
+MCP 응답은 SSE 스트림이고, MCP 는 도구 결과를 보낸 **뒤에** 스트림을 닫습니다.
+그 마지막 닫힘만 앞단에서 잘리는 경우가 있어, `api_client` 는 끊긴 시점에 내 요청에
+대한 응답을 이미 받았으면 **그것을 그대로 씁니다** — 끝난 생성·실행이 실패로 보이지
+않습니다. 한 줄도 못 받고 끊긴 경우에만 오류로 올리고, 그때도 트레이스백 대신 어디를
+봐야 하는지(서버 로그·프록시 타임아웃) 짚어 줍니다.
+
+볼 곳은 세 군데입니다.
+
+| 확인 | 무엇을 보나 |
+|---|---|
+| MCP 서버 로그 | 처리 중 예외·OOM·재시작이 있었는지 |
+| 앞단 프록시(nginx/LB) | `proxy_read_timeout`, `proxy_buffering off` |
+| Agent 로그 | LLM 게이트웨이 구간에서 같은 오류가 났는지 |
+
 ## 산출물
 
 | 경로 | 내용 |
