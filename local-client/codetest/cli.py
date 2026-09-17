@@ -20,12 +20,13 @@ CLI 는 MCP 하나만 알면 된다. MCP ↔ Agent 통신은 MCP 가 처리한�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
 from codetest import config as config_module
-from codetest import executor, runner
+from codetest import executor, project_layout, runner
 from codetest.api_client import EXECUTE_TIMEOUT, AgentClient, ApiError
 
 #: 등록은 커밋 소스 스냅샷을 함께 올려 본문이 커진다.
@@ -56,6 +57,39 @@ def _repo() -> Path:
     except GitError as exc:
         _fail(str(exc))
         raise  # 도달하지 않음 (typer.Exit)
+
+
+@dataclass
+class _Build:
+    """테스트를 어떻게 돌릴지. 비워 두면 `project_layout` 이 알아서 정한다."""
+
+    gradle: str
+    maven: str
+    module: str
+    test_root: str
+
+
+def _build_options(
+    repo_root: Path, gradle: str, maven: str, module: str, test_root: str
+) -> _Build:
+    """CLI 옵션 → 저장소별 설정 → 기본값 순으로 정한다."""
+    cfg = config_module.load(repo_root)
+    return _Build(
+        gradle=gradle or cfg.gradle_command,
+        maven=maven or cfg.maven_command,
+        module=module or cfg.module,
+        test_root=test_root or cfg.test_source_root,
+    )
+
+
+#: run / test 가 공유하는 빌드 옵션. 프로젝트 구조는 자동 탐지가 기본이라
+#: 아래 두 개는 빌드 스크립트에서 소스 경로를 직접 바꾼 경우에만 쓴다.
+_GRADLE_OPT = typer.Option("", "--gradle", help="gradlew 가 없을 때 쓸 gradle 실행 파일")
+_MAVEN_OPT = typer.Option("", "--maven", help="mvnw 가 없을 때 쓸 maven 실행 파일")
+_MODULE_OPT = typer.Option("", "--module", help="테스트를 넣을 모듈 (자동 탐지가 기본)")
+_TEST_ROOT_OPT = typer.Option(
+    "", "--test-root", help="테스트 소스 루트 (자동 탐지가 기본)"
+)
 
 
 def _client(repo_root: Path, timeout: float) -> tuple[AgentClient, str]:
@@ -175,12 +209,16 @@ def _execute_locally(
     generated: dict,
     diff: str,
     sources: list[dict],
-    gradle: str,
+    build: _Build,
     timeout: float,
 ) -> dict:
     """MCP 로 @SpringBootTest 를 주입받아 **이 PC 의 프로젝트에서** 실행한다.
 
     실행은 로컬에서 하고, 중요도 재판정과 결과 적절성 판단만 서버에 맡긴다.
+
+    MCP 가 돌려준 `file_path` 는 **단서로만** 쓴다. MCP 에는 사용자의 작업 트리가
+    없어 개요에 담긴 소스 경로로 추정할 뿐이라, 실제 자리는 이 PC 의 디렉터리를
+    보는 `project_layout` 이 정한다 (멀티 모듈·Maven·하위 빌드 루트).
     """
     test_code = generated.get("test_code", "")
 
@@ -191,15 +229,35 @@ def _execute_locally(
         _fail(str(exc))
         raise
 
-    ui.print_info(f"이 PC 에서 테스트 실행 중… (Gradle: {prepared['file_path']})")
+    package = prepared.get("package", "")
+    class_name = prepared.get("class_name") or Path(prepared["file_path"]).stem
+    try:
+        layout = project_layout.detect(
+            repo_root,
+            package=package,
+            hint_path=prepared["file_path"],
+            module_override=build.module,
+            test_root_override=build.test_root,
+        )
+    except project_layout.LayoutError as exc:
+        _fail(str(exc))
+        raise
+
+    ui.print_info(
+        "이 PC 에서 테스트 실행 중… "
+        f"({layout.describe()}: {layout.relative_test_file(package, class_name)})"
+    )
     try:
         result = executor.run_tests(
             repo_root,
             test_source=prepared["source"],
             test_file_path=prepared["file_path"],
+            package=package,
             springboot_applied=prepared.get("springboot_applied", False),
             applied=prepared.get("applied"),
-            gradle_command=gradle,
+            gradle_command=build.gradle,
+            maven_command=build.maven,
+            layout=layout,
             timeout=int(timeout),
         )
     except executor.ExecutionError as exc:
@@ -228,15 +286,20 @@ def run(
     stage: bool = typer.Option(
         False, "--stage", help="staging 단계에 올라간 파일을 대상으로 실행"
     ),
-    gradle: str = typer.Option("gradle", "--gradle", help="gradlew 가 없을 때 쓸 gradle 실행 파일"),
+    gradle: str = _GRADLE_OPT,
+    maven: str = _MAVEN_OPT,
+    module: str = _MODULE_OPT,
+    test_root: str = _TEST_ROOT_OPT,
     timeout: float = typer.Option(EXECUTE_TIMEOUT, "--timeout", help="서버 응답 대기 시간(초)"),
 ) -> None:
     """변경 파일로 Test Code 를 생성하고 @SpringBootTest 로 실행한 뒤 report 를 표시한다.
 
-    생성·판정은 서버가, **테스트 실행은 이 PC 가** 한다.
+    생성·판정은 서버가, **테스트 실행은 이 PC 가** 한다. 실행할 모듈과 빌드 도구는
+    프로젝트 구조를 보고 정한다 (Gradle/Maven · 단일/멀티 모듈).
     """
     scope = "staged" if stage else "unstaged"
     repo_root = _repo()
+    build = _build_options(repo_root, gradle, maven, module, test_root)
     client, project_id = _client(repo_root, timeout)
 
     ui.print_header("codetest run", "staging 포함 변경" if stage else "staging 미포함 변경")
@@ -253,7 +316,7 @@ def run(
 
     saved = _save(repo_root, generated)
     report = _execute_locally(
-        repo_root, client, project_id, generated, diff, sources, gradle, timeout
+        repo_root, client, project_id, generated, diff, sources, build, timeout
     )
     _show(generated, report, saved, _save_result(repo_root, report))
 
@@ -288,14 +351,18 @@ def generate(
 
 @app.command("test")
 def test(
-    gradle: str = typer.Option("gradle", "--gradle", help="gradlew 가 없을 때 쓸 gradle 실행 파일"),
+    gradle: str = _GRADLE_OPT,
+    maven: str = _MAVEN_OPT,
+    module: str = _MODULE_OPT,
+    test_root: str = _TEST_ROOT_OPT,
     timeout: float = typer.Option(EXECUTE_TIMEOUT, "--timeout", help="서버 응답 대기 시간(초)"),
 ) -> None:
     """src/test/test.txt 의 Test Code 를 @SpringBootTest 로 실행하고 report 를 표시한다.
 
-    실행은 **이 PC 의 프로젝트**에서 이뤄진다. Gradle 과 JDK 가 필요하다.
+    실행은 **이 PC 의 프로젝트**에서 이뤄진다. JDK 와 Gradle 또는 Maven 이 필요하다.
     """
     repo_root = _repo()
+    build = _build_options(repo_root, gradle, maven, module, test_root)
     client, project_id = _client(repo_root, timeout)
 
     ui.print_header("codetest test", runner.TEST_FILE.as_posix())
@@ -318,7 +385,7 @@ def test(
 
     report = _execute_locally(
         repo_root, client, project_id, {**meta, "test_code": test_code},
-        diff, sources, gradle, timeout,
+        diff, sources, build, timeout,
     )
     _show(
         {**meta, "test_code": test_code}, report,

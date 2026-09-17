@@ -20,6 +20,7 @@ Agent MCP 클라이언트.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 import httpx
@@ -77,8 +78,36 @@ class AgentClient:
     def _post(self, payload: dict, timeout: float | None = None) -> dict | None:
         effective = timeout or self.timeout
         try:
-            with httpx.Client(timeout=effective) as client:
-                response = client.post(self.endpoint, headers=self._headers(), json=payload)
+            with (
+                httpx.Client(timeout=effective) as client,
+                client.stream(
+                    "POST", self.endpoint, headers=self._headers(), json=payload
+                ) as response,
+            ):
+                # 서버가 세션을 발급하면 이후 요청에 계속 실어 보내야 한다
+                session_id = response.headers.get("mcp-session-id")
+                if session_id:
+                    self._session_id = session_id
+
+                if response.status_code >= 400:
+                    response.read()
+                    raise ApiError(
+                        f"HTTP {response.status_code}: "
+                        f"{response.text[:300] or response.reason_phrase}",
+                        response.status_code,
+                    )
+                # 알림(notification)에는 응답 본문이 없다 (202 Accepted)
+                if response.status_code == 202:
+                    return None
+
+                if "text/event-stream" in response.headers.get("content-type", ""):
+                    messages = _read_sse(response)
+                else:
+                    response.read()
+                    if not response.content:
+                        return None
+                    body = response.json()
+                    messages = body if isinstance(body, list) else [body]
         except httpx.ConnectError as exc:
             raise ApiError(
                 f"MCP 서버에 연결할 수 없습니다: {self.endpoint}\n"
@@ -88,26 +117,8 @@ class AgentClient:
             ) from None
         except httpx.TimeoutException:
             raise ApiError(f"요청이 시간 초과되었습니다 ({effective:.0f}s).") from None
-
-        # 서버가 세션을 발급하면 이후 요청에 계속 실어 보내야 한다
-        session_id = response.headers.get("mcp-session-id")
-        if session_id:
-            self._session_id = session_id
-
-        if response.status_code >= 400:
-            raise ApiError(
-                f"HTTP {response.status_code}: {response.text[:300] or response.reason_phrase}",
-                response.status_code,
-            )
-        # 알림(notification)에는 응답 본문이 없다 (202 Accepted)
-        if response.status_code == 202 or not response.content:
-            return None
-
-        if "text/event-stream" in response.headers.get("content-type", ""):
-            messages = _sse_messages(response.text)
-        else:
-            body = response.json()
-            messages = body if isinstance(body, list) else [body]
+        except httpx.TransportError as exc:
+            raise ApiError(_disconnected(exc, self.endpoint)) from None
 
         # SSE 에는 알림이 섞여 오므로 내 요청 id 에 대응하는 응답만 고른다
         for message in messages:
@@ -256,30 +267,80 @@ class AgentClient:
 
 
 # ===========================================================================
+#  연결이 끊겼을 때
+# ===========================================================================
+def _disconnected(exc: httpx.TransportError, endpoint: str) -> str:
+    """전송 도중 끊긴 경우의 안내문.
+
+    `RemoteProtocolError: peer closed connection without sending complete
+    message body (incomplete chunked read)` 는 "서버가 본문을 끝맺지 않고
+    연결을 닫았다" 는 뜻이다. 우리 쪽 요청이 틀려서가 아니라 **상대가 중간에
+    사라진 것**이므로, 고칠 곳은 서버나 그 앞단이다.
+    """
+    return (
+        f"서버가 응답을 끝맺지 않고 연결을 끊었습니다: {endpoint}\n"
+        f"  · MCP 서버가 처리 도중 죽었는지 서버 로그를 확인하세요 "
+        f"(예외·OOM·재시작).\n"
+        f"  · 앞단 프록시(nginx/LB)가 오래 걸리는 요청을 끊었을 수 있습니다 — "
+        f"proxy_read_timeout 과 응답 버퍼링(proxy_buffering off)을 확인하세요.\n"
+        f"  · 생성/실행은 수 분이 걸립니다. 잠시 뒤 같은 명령을 다시 실행하면 "
+        f"대개 이어서 진행됩니다.\n"
+        f"  ({type(exc).__name__}: {exc})"
+    )
+
+
+# ===========================================================================
 #  응답 해석
 # ===========================================================================
-def _sse_messages(body: str) -> list[dict]:
-    """SSE 본문에서 `data:` 줄만 모아 JSON 메시지 목록으로 만든다."""
-    chunks: list[str] = []
+def _iter_sse_messages(lines: Iterable[str]) -> Iterator[dict]:
+    """SSE 줄을 받는 대로 JSON 메시지로 바꿔 흘려보낸다.
+
+    본문 전체를 모은 뒤 파싱하면 스트림이 잘렸을 때 **이미 도착한 메시지까지**
+    함께 버리게 된다. 이벤트 경계(빈 줄)마다 내보내면 그런 일이 없다.
+    """
     buffer: list[str] = []
-    for line in body.splitlines():
+
+    def _flush() -> Iterator[dict]:
+        if not buffer:
+            return
+        try:
+            parsed = json.loads("\n".join(buffer))
+        except ValueError:
+            parsed = None
+        buffer.clear()
+        if isinstance(parsed, dict):
+            yield parsed
+
+    for line in lines:
+        line = line.rstrip("\r\n")
         if line.startswith("data:"):
             buffer.append(line[5:].lstrip())
         elif not line.strip():  # 빈 줄 = 이벤트 경계
-            if buffer:
-                chunks.append("\n".join(buffer))
-                buffer = []
-    if buffer:
-        chunks.append("\n".join(buffer))
+            yield from _flush()
+    yield from _flush()
 
+
+def _sse_messages(body: str) -> list[dict]:
+    """SSE 본문에서 `data:` 줄만 모아 JSON 메시지 목록으로 만든다."""
+    return list(_iter_sse_messages(body.splitlines()))
+
+
+def _read_sse(response: httpx.Response) -> list[dict]:
+    """SSE 를 받다가 끊겨도 **이미 받은 메시지는 살린다**.
+
+    MCP 는 도구 결과를 보낸 *뒤* 스트림을 닫는다. 그 마지막 닫힘만 앞단에서
+    잘려도 httpx 는 RemoteProtocolError 를 던지는데, 그때 받아 둔 응답까지
+    버리면 멀쩡히 끝난 생성·실행을 실패로 보고하게 된다. 한 줄도 못 받았을
+    때만 오류로 올린다.
+    """
     messages: list[dict] = []
-    for chunk in chunks:
-        try:
-            parsed = json.loads(chunk)
-        except ValueError:
-            continue
-        if isinstance(parsed, dict):
-            messages.append(parsed)
+    try:
+        for message in _iter_sse_messages(response.iter_lines()):
+            # 한 건씩 담는다 — 통째로 모으면 끊겼을 때 받은 것까지 함께 잃는다
+            messages.append(message)  # noqa: PERF402
+    except httpx.TransportError:
+        if not messages:
+            raise
     return messages
 
 
