@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from codetest import executor
+from codetest import executor, project_layout
 from codetest.executor import ExecutionError, run_tests
 
 TEST_PATH = "src/test/java/com/example/demo/FooTest.java"
@@ -56,7 +56,7 @@ def _fake_gradle(monkeypatch, project: Path, returncode: int = 0, write_reports:
         return returncode, "BUILD OUTPUT"
 
     monkeypatch.setattr(executor, "_run", _run)
-    monkeypatch.setattr(executor.shutil, "which", lambda name: "/usr/bin/gradle")
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
     return calls
 
 
@@ -130,7 +130,7 @@ def test_restores_even_when_gradle_fails(project, monkeypatch):
         raise ExecutionError("gradle 폭발")
 
     monkeypatch.setattr(executor, "_run", _boom)
-    monkeypatch.setattr(executor.shutil, "which", lambda name: "/usr/bin/gradle")
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
 
     with pytest.raises(ExecutionError):
         run_tests(project, SOURCE, TEST_PATH)
@@ -139,15 +139,29 @@ def test_restores_even_when_gradle_fails(project, monkeypatch):
 
 
 # --- 안전장치 ------------------------------------------------------------------
-def test_refuses_to_write_outside_the_project(project, monkeypatch):
+def test_a_path_pointing_outside_is_neutralized(project, monkeypatch):
+    """서버가 준 경로는 **단서**일 뿐이다 — 실제 자리는 레이아웃이 정한다.
+
+    그래서 `../../etc/…` 같은 경로를 받아도 프로젝트 밖으로 나가지 못하고
+    이 프로젝트의 테스트 소스 루트 안에 쓰인다.
+    """
     _fake_gradle(monkeypatch, project)
-    with pytest.raises(ExecutionError, match="프로젝트 밖"):
-        run_tests(project, SOURCE, "../../etc/evil.java")
+
+    result = run_tests(project, SOURCE, "../../etc/evil.java")
+
+    assert result.test_file_path == "src/test/java/evil.java"
+    assert not (project.parent / "etc").exists()
+
+
+def test_refuses_a_test_root_outside_the_project(project):
+    """직접 지정하는 값은 막아야 한다 — 여기는 사용자의 실제 작업 트리다."""
+    with pytest.raises(project_layout.LayoutError, match="프로젝트 안쪽"):
+        project_layout.detect(project, test_root_override="../../etc")
 
 
 def test_reports_missing_gradle(project, monkeypatch):
-    monkeypatch.setattr(executor.shutil, "which", lambda name: None)
-    with pytest.raises(ExecutionError, match="Gradle 을 찾을 수 없습니다"):
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: None)
+    with pytest.raises(ExecutionError, match="gradle 을\\(를\\) 찾을 수 없습니다"):
         run_tests(project, SOURCE, TEST_PATH)
 
 
@@ -195,7 +209,7 @@ def test_a_compile_failure_does_not_inherit_the_previous_pass_count(project, mon
     """컴파일이 깨졌으면 집계는 0 이어야 한다 — 지난 성공을 물려받으면 안 된다."""
     _stale_report(project, "com.example.demo.FooTest")
     monkeypatch.setattr(executor, "_run", lambda c, cwd, t: (1, COMPILE_FAILURE))
-    monkeypatch.setattr(executor.shutil, "which", lambda name: "/usr/bin/gradle")
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
 
     result = run_tests(project, SOURCE, TEST_PATH)
 
@@ -207,7 +221,7 @@ def test_a_compile_failure_does_not_inherit_the_previous_pass_count(project, mon
 def test_a_compile_failure_says_why(project, monkeypatch):
     """'실패 0건인데 FAIL' 로 끝나지 않도록 원인을 남긴다."""
     monkeypatch.setattr(executor, "_run", lambda c, cwd, t: (1, COMPILE_FAILURE))
-    monkeypatch.setattr(executor.shutil, "which", lambda name: "/usr/bin/gradle")
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
 
     result = run_tests(project, SOURCE, TEST_PATH)
 
@@ -236,7 +250,7 @@ def test_stale_jacoco_is_not_reported_as_this_run(project, monkeypatch):
     (jacoco / "jacocoTestReport.xml").write_text(JACOCO_XML, encoding="utf-8")
 
     monkeypatch.setattr(executor, "_run", lambda c, cwd, t: (1, COMPILE_FAILURE))
-    monkeypatch.setattr(executor.shutil, "which", lambda name: "/usr/bin/gradle")
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
 
     result = run_tests(project, SOURCE, TEST_PATH)
 
@@ -277,7 +291,7 @@ def test_falls_back_to_gradles_own_reason(project, monkeypatch):
         "Run with --stacktrace.\n"
     )
     monkeypatch.setattr(executor, "_run", lambda c, cwd, t: (1, output))
-    monkeypatch.setattr(executor.shutil, "which", lambda name: "/usr/bin/gradle")
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
 
     result = run_tests(project, SOURCE, TEST_PATH)
 
@@ -290,9 +304,93 @@ def test_falls_back_to_gradles_own_reason(project, monkeypatch):
 def test_build_errors_reach_the_report_payload(project, monkeypatch):
     """MCP 로 보내는 dict 에 실려야 리포트까지 도달한다."""
     monkeypatch.setattr(executor, "_run", lambda c, cwd, t: (1, COMPILE_FAILURE))
-    monkeypatch.setattr(executor.shutil, "which", lambda name: "/usr/bin/gradle")
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
 
     payload = run_tests(project, SOURCE, TEST_PATH).to_dict()
 
     assert payload["build_errors"]
     assert payload["total"] == 0
+
+
+# --- 폴더 구조를 가정하지 않는다 ---------------------------------------------------
+#
+# 예전에는 src/test/java·build/test-results/test·<루트>/gradlew 가 전부 상수였다.
+# 멀티 모듈이나 Maven 에서는 테스트가 엉뚱한 곳에 쓰이고 집계가 0 으로 나온다.
+def _multi_module(tmp_path: Path) -> Path:
+    (tmp_path / "settings.gradle").write_text("include 'api', 'batch'", encoding="utf-8")
+    for name, package in (("api", "com.example.demo"), ("batch", "com.example.batch")):
+        module = tmp_path / name
+        module.joinpath("src", "main", "java", *package.split(".")).mkdir(parents=True)
+        (module / "build.gradle").write_text("plugins { id 'java'; id 'jacoco' }", encoding="utf-8")
+    return tmp_path
+
+
+def _reports_in(module: Path, junit: str = "build/test-results/test",
+                jacoco: str = "build/reports/jacoco/test/jacocoTestReport.xml") -> None:
+    junit_dir = module / junit
+    junit_dir.mkdir(parents=True, exist_ok=True)
+    (junit_dir / "TEST-com.example.demo.FooTest.xml").write_text(JUNIT_XML, encoding="utf-8")
+    report = module / jacoco
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(JACOCO_XML, encoding="utf-8")
+
+
+def test_multi_module_writes_into_the_owning_module(tmp_path, monkeypatch):
+    root = _multi_module(tmp_path)
+    written: list[Path] = []
+
+    def _run(command, cwd, timeout):
+        written.append(Path(cwd))
+        _reports_in(root / "api")
+        return 0, "BUILD OUTPUT"
+
+    monkeypatch.setattr(executor, "_run", _run)
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
+
+    result = run_tests(root, SOURCE, TEST_PATH, package="com.example.demo")
+
+    # 테스트는 대상 코드와 같은 모듈에 쓰인다
+    assert result.test_file_path == "api/src/test/java/com/example/demo/FooTest.java"
+    assert result.module == "api"
+    # 명령은 빌드 루트에서, 그 모듈만 짚어서 돈다
+    assert written == [root]
+    assert ":api:test" in result.command
+    # 집계는 그 모듈의 리포트에서 나온다
+    assert (result.total, result.failed) == (3, 1)
+    assert result.coverage["line_rate"] == 90.0
+
+
+def test_maven_project_runs_maven_and_reads_surefire(tmp_path, monkeypatch):
+    (tmp_path / "pom.xml").write_text("<project><build><plugins>jacoco</plugins></build></project>",
+                                      encoding="utf-8")
+    tmp_path.joinpath("src", "main", "java", "com", "example", "demo").mkdir(parents=True)
+
+    def _run(command, cwd, timeout):
+        _reports_in(tmp_path, junit="target/surefire-reports",
+                    jacoco="target/site/jacoco/jacoco.xml")
+        return 0, "BUILD OUTPUT"
+
+    monkeypatch.setattr(executor, "_run", _run)
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    result = run_tests(tmp_path, SOURCE, TEST_PATH, package="com.example.demo")
+
+    assert result.build_tool == "maven"
+    assert result.command[0] == "/usr/bin/mvn"
+    assert "-Dtest=FooTest" in result.command
+    assert (result.total, result.failed) == (3, 1)     # target/surefire-reports 에서 읽었다
+    assert result.coverage["line_rate"] == 90.0        # target/site/jacoco/jacoco.xml
+
+
+def test_stale_reports_are_cleared_in_the_right_module(tmp_path, monkeypatch):
+    """지운 자리가 틀리면 컴파일이 깨져도 지난 성공이 그대로 집계된다."""
+    root = _multi_module(tmp_path)
+    _reports_in(root / "api")
+
+    monkeypatch.setattr(executor, "_run", lambda c, cwd, t: (1, "compile error"))
+    monkeypatch.setattr(project_layout.shutil, "which", lambda name: "/usr/bin/gradle")
+
+    result = run_tests(root, SOURCE, TEST_PATH, package="com.example.demo")
+
+    assert result.total == 0                 # 옛 XML 이 이번 집계로 둔갑하지 않았다
+    assert result.tests_ran is False

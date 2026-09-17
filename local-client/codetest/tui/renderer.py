@@ -359,6 +359,11 @@ def print_result_detail(report: dict, result_file: Path | None = None) -> None:
     )
 
 
+def _build_tool(report: dict) -> str:
+    """실행에 쓴 빌드 도구 이름. 예전 리포트에는 없으므로 gradle 로 본다."""
+    return "maven" if report.get("build_tool") == "maven" else "gradle"
+
+
 def _summary_rows(report: dict) -> list[tuple[str, str, str]]:
     """실행 집계 · @SpringBootTest 적용 여부 · JaCoCo 커버리지 → (항목, 값, 색).
 
@@ -383,7 +388,7 @@ def _summary_rows(report: dict) -> list[tuple[str, str, str]]:
             ),
             "",
         ),
-        ("gradle exit code", str(report.get("exit_code", "-")), ""),
+        (f"{_build_tool(report)} exit code", str(report.get("exit_code", "-")), ""),
     ]
 
     if report.get("springboot_applied"):
@@ -392,7 +397,10 @@ def _summary_rows(report: dict) -> list[tuple[str, str, str]]:
         rows.append(("@SpringBootTest", "미적용", "red"))
 
     if report.get("test_file_path"):
+        # 프로젝트마다 자리가 다르다 — 어느 모듈에 쓰였는지 그대로 보여 준다
         rows.append(("실행 파일", report["test_file_path"], ""))
+    if report.get("module"):
+        rows.append(("실행 모듈", report["module"], ""))
 
     coverage = report.get("coverage")
     if coverage:
@@ -407,10 +415,10 @@ def _summary_rows(report: dict) -> list[tuple[str, str, str]]:
             "",
         ))
     elif report.get("jacoco_enabled"):
-        # 테스트가 실패하면 gradle 이 jacocoTestReport 까지 가지 않는다.
+        # 테스트가 실패하면 빌드 도구가 커버리지 리포트까지 가지 않는다.
         rows.append(("JaCoCo", "리포트 없음 (테스트 실패로 커버리지 미집계)", "yellow"))
     else:
-        rows.append(("JaCoCo", "프로젝트 build 설정에 미적용", "yellow"))
+        rows.append(("JaCoCo", "프로젝트 빌드 설정에 미적용", "yellow"))
 
     for note in report.get("applied") or []:
         rows.append(("주입 작업", note, ""))

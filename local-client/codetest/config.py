@@ -3,8 +3,13 @@
 
   · 서버 주소 / API Key : `~/.codetest/config.json` (전역)
   · 등록된 project_id   : `<repo>/.codetest/config.json` (저장소별)
+  · 프로젝트 구조 덮어쓰기: `<repo>/.codetest/config.json` (저장소별)
 
 환경변수 CODETEST_SERVER_URL / CODETEST_API_KEY 가 파일보다 우선한다.
+
+프로젝트 구조(module / test_source_root)는 **평소에 적을 필요가 없다** —
+`project_layout` 이 실제 디렉터리를 보고 정한다. 빌드 스크립트에서 소스 경로를
+직접 바꾼 프로젝트에서만 탈출구로 쓴다.
 """
 
 from __future__ import annotations
@@ -24,6 +29,16 @@ class Config:
     api_key: str = ""
     #: 이 저장소에 대응하는 Agent Server 프로젝트 ID
     project_id: str | None = None
+
+    # --- 프로젝트 구조 (보통은 비워 둔다. 자동 탐지가 맞지 않을 때만 쓴다) ---
+    #: 테스트를 넣을 빌드 모듈 (저장소 기준 상대 경로, 예: "api")
+    module: str = ""
+    #: 테스트 소스 루트 (저장소 기준 상대 경로, 예: "api/src/test/java").
+    #: 빌드 스크립트에서 sourceSets 를 직접 바꾼 프로젝트용 탈출구다.
+    test_source_root: str = ""
+    #: gradlew/mvnw 가 없을 때 쓸 실행 파일
+    gradle_command: str = "gradle"
+    maven_command: str = "mvn"
 
 
 def _read_json(path: Path) -> dict:

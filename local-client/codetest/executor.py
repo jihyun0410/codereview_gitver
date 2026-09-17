@@ -1,31 +1,32 @@
 """
-로컬 Gradle 실행기.
+로컬 빌드 실행기 (Gradle / Maven).
 
 정의서: "JaCoCo와 @SpringBootTest 를 사용하여 Test Code 실행"
 
 테스트는 **명령을 입력한 이 PC 의 프로젝트에서** 돌린다. 개발자가 방금 고친
 코드가 그대로 들어 있는 작업 트리라 별도 사본을 만들거나 변경분을 덮어쓸 필요가
 없다. `@SpringBootTest` 주입은 코드 기반 작업이라 MCP 가 해 주고, 여기서는 그
-결과를 받아 파일로 쓰고 gradle 을 돌린 뒤 집계만 한다.
+결과를 받아 파일로 쓰고 빌드 도구를 돌린 뒤 집계만 한다.
 
 **복구 주의**: 서버 사본과 달리 여기는 사용자의 실제 작업 트리다.
 `git checkout -- .` 같은 되돌리기는 미커밋 변경분을 날리므로 절대 하지 않는다.
 이 실행이 새로 만든 파일만 지운다.
+
+**폴더 구조는 가정하지 않는다.** 테스트를 쓸 자리·리포트 경로·실행 명령은 전부
+`project_layout` 이 실제 디렉터리를 보고 정한다 (멀티 모듈·Maven·저장소 하위 빌드
+루트 지원). 이 모듈은 그렇게 정해진 자리에 파일을 쓰고, 명령을 돌리고, 집계만 한다.
 """
 
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
-#: JaCoCo / JUnit 리포트 위치 (Gradle 기본값)
-_JACOCO_XML = Path("build") / "reports" / "jacoco" / "test" / "jacocoTestReport.xml"
-_JUNIT_DIR = Path("build") / "test-results" / "test"
-_BUILD_FILES = ("build.gradle", "build.gradle.kts", "pom.xml")
+from codetest import project_layout
+from codetest.project_layout import Layout, LayoutError
 
 #: gradle 출력이 리포트에 통째로 실리지 않도록 자른다
 _OUTPUT_LIMIT = 20_000
@@ -82,6 +83,9 @@ class ExecutionResult:
     command: list[str] = field(default_factory=list)
     #: 테스트가 시작조차 못한 이유 (컴파일 오류 등). 테스트 실패와는 다르다.
     build_errors: list[str] = field(default_factory=list)
+    #: 어디서 무엇으로 돌렸는지 — 구조가 제각각인 프로젝트에서 원인을 찾는 단서
+    build_tool: str = project_layout.GRADLE
+    module: str = ""
 
     @property
     def tests_ran(self) -> bool:
@@ -108,6 +112,8 @@ class ExecutionResult:
             "test_file_path": self.test_file_path,
             "command": self.command,
             "build_errors": self.build_errors,
+            "build_tool": self.build_tool,
+            "module": self.module,
         }
 
 
@@ -115,21 +121,38 @@ def run_tests(
     repo_root: Path,
     test_source: str,
     test_file_path: str,
+    package: str = "",
     springboot_applied: bool = True,
     applied: list[str] | None = None,
     gradle_command: str = "gradle",
+    maven_command: str = "mvn",
+    layout: Layout | None = None,
     timeout: int = 900,
 ) -> ExecutionResult:
     """
     이 PC 의 프로젝트에서 @SpringBootTest 를 실행한다.
 
     :param test_source:    MCP 가 @SpringBootTest 주입을 마친 Java 소스
-    :param test_file_path: 저장소 루트 기준 상대 경로 (MCP 가 계산해 준 값)
+    :param test_file_path: MCP 가 계산해 준 저장소 기준 경로. **단서로만 쓴다** —
+                           실제 자리는 `project_layout` 이 이 PC 의 디렉터리를 보고
+                           정한다 (멀티 모듈이면 MCP 의 추정과 다를 수 있다).
+    :param package:        테스트 소스의 package 선언. 모듈을 고르는 단서다.
+    :param layout:         이미 탐지해 둔 레이아웃 (없으면 여기서 탐지한다)
     """
     if not repo_root.is_dir():
         raise ExecutionError(f"프로젝트 경로가 없습니다: {repo_root}")
 
-    target = _safe_target(repo_root, test_file_path)
+    class_name = _class_name(test_file_path)
+    package = package or _package_of(test_file_path)
+    try:
+        layout = layout or project_layout.detect(
+            repo_root, package=package, hint_path=test_file_path
+        )
+    except LayoutError as exc:
+        raise ExecutionError(str(exc)) from None
+
+    resolved_path = layout.relative_test_file(package, class_name)
+    target = _safe_target(repo_root, resolved_path)
     existed = target.is_file()
     previous = target.read_text(encoding="utf-8") if existed else None
 
@@ -137,26 +160,30 @@ def run_tests(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(test_source, encoding="utf-8")
 
-        class_name = _class_name(test_file_path)
         # 지난 실행이 남긴 리포트를 먼저 치운다. 안 그러면 이번에 컴파일이 깨져
         # 테스트가 한 건도 안 돌아도 옛 XML 이 그대로 집계돼
         # "FAIL 인데 총 3 / 성공 3" 같은 리포트가 나온다.
-        _clear_stale_reports(repo_root, class_name)
+        _clear_stale_reports(layout, class_name)
 
-        command = _build_command(repo_root, test_file_path, gradle_command)
-        returncode, output = _run(command, repo_root, timeout)
+        try:
+            command = layout.command(class_name, gradle_command, maven_command)
+        except LayoutError as exc:
+            raise ExecutionError(str(exc)) from None
+        returncode, output = _run(command, layout.build_root, timeout)
 
         result = ExecutionResult(
             exit_code=returncode,
             output=_clip(output),
-            test_file_path=test_file_path,
+            test_file_path=resolved_path,
             springboot_applied=springboot_applied,
             applied=list(applied or []),
             command=command,
-            jacoco_enabled=_has_jacoco(repo_root),
+            jacoco_enabled=layout.jacoco,
+            build_tool=layout.tool,
+            module=layout.module_path,
         )
-        _collect_junit(repo_root, result, class_name)
-        _collect_jacoco(repo_root, result)
+        _collect_junit(layout, result, class_name)
+        _collect_jacoco(layout, result)
         if returncode != 0 and not result.tests_ran:
             # 테스트가 시작조차 못했다 — 왜 FAIL 인지 출력에서 찾아 남긴다.
             result.build_errors = _build_errors(output)
@@ -173,32 +200,18 @@ def _class_name(test_file_path: str) -> str:
     return Path(test_file_path).stem
 
 
-def _build_command(repo_root: Path, test_file_path: str, gradle_command: str) -> list[str]:
-    """이 테스트 클래스만 돌리고 JaCoCo 리포트까지 만든다."""
-    launcher = _gradle_launcher(repo_root, gradle_command)
-    command = [*launcher, "test", "--tests", f"*{_class_name(test_file_path)}"]
-    if _has_jacoco(repo_root):
-        command.append("jacocoTestReport")
-    command.append("--console=plain")
-    return command
+def _package_of(test_file_path: str) -> str:
+    """`…/src/test/java/com/example/demo/FooTest.java` → `com.example.demo`.
 
-
-def _gradle_launcher(repo_root: Path, gradle_command: str) -> list[str]:
-    """gradlew → 없으면 시스템 gradle. Windows 는 gradlew.bat."""
-    for name, prefix in (("gradlew.bat", []), ("gradlew", ["sh"])):
-        wrapper = repo_root / name
-        if wrapper.is_file():
-            return [*prefix, str(wrapper)]
-
-    gradle = shutil.which(gradle_command)
-    if gradle is None:
-        raise ExecutionError(
-            f"Gradle 을 찾을 수 없습니다 ({gradle_command}).\n"
-            "  · 프로젝트에 gradlew 를 두거나\n"
-            "  · Gradle 을 설치해 PATH 에 넣거나\n"
-            "  · --gradle 옵션으로 실행 파일 경로를 지정하세요."
-        )
-    return [gradle]
+    package 선언을 따로 받지 못했을 때의 보조 수단이다. 언어 디렉터리를 하나로
+    못 박지 않으려고 `src/test/<언어>/` 다음부터를 패키지로 읽는다.
+    """
+    normalized = test_file_path.replace("\\", "/")
+    marker = "src/test/"
+    if marker not in normalized:
+        return ""
+    tail = normalized.split(marker, 1)[1].split("/")
+    return ".".join(tail[1:-1])          # 언어 디렉터리와 파일명을 뺀 가운데
 
 
 def _run(command: list[str], cwd: Path, timeout: int) -> tuple[int, str]:
@@ -220,30 +233,18 @@ def _run(command: list[str], cwd: Path, timeout: int) -> tuple[int, str]:
     return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 
-def _has_jacoco(repo_root: Path) -> bool:
-    for name in _BUILD_FILES:
-        candidate = repo_root / name
-        if not candidate.is_file():
-            continue
-        try:
-            if "jacoco" in candidate.read_text(encoding="utf-8", errors="ignore").lower():
-                return True
-        except OSError:
-            continue
-    return False
-
-
 # ---------------------------------------------------------------------------
 #  결과 수집
 # ---------------------------------------------------------------------------
-def _collect_junit(repo_root: Path, result: ExecutionResult, class_name: str) -> None:
-    """이번에 돌린 클래스의 build/test-results/test/*.xml 만 합산한다.
+def _collect_junit(layout: Layout, result: ExecutionResult, class_name: str) -> None:
+    """이번에 돌린 클래스의 JUnit XML 만 합산한다.
 
     디렉터리에 있는 XML 을 전부 더하면 우리가 돌리지도 않은 다른 테스트 클래스의
-    지난 결과까지 이번 실행의 집계로 둔갑한다 (`--tests *<클래스>` 로 한 클래스만
-    돌리므로 나머지는 갱신되지도 않는다).
+    지난 결과까지 이번 실행의 집계로 둔갑한다 (한 클래스만 돌리므로 나머지는
+    갱신되지도 않는다). 디렉터리 위치는 빌드 도구와 모듈에 따라 다르다 —
+    Gradle `<모듈>/build/test-results/test`, Maven `<모듈>/target/surefire-reports`.
     """
-    results_dir = repo_root / _JUNIT_DIR
+    results_dir = layout.junit_dir
     if not results_dir.is_dir():
         return
 
@@ -320,8 +321,8 @@ def _build_errors(output: str) -> list[str]:
     return reasons[:20]
 
 
-def _collect_jacoco(repo_root: Path, result: ExecutionResult) -> None:
-    report = repo_root / _JACOCO_XML
+def _collect_jacoco(layout: Layout, result: ExecutionResult) -> None:
+    report = layout.coverage_report
     if not report.is_file():
         return
     try:
@@ -343,15 +344,15 @@ def _collect_jacoco(repo_root: Path, result: ExecutionResult) -> None:
 # ---------------------------------------------------------------------------
 #  파일 조작
 # ---------------------------------------------------------------------------
-def _clear_stale_reports(repo_root: Path, class_name: str) -> None:
+def _clear_stale_reports(layout: Layout, class_name: str) -> None:
     """이번에 갱신될 리포트만 미리 지운다.
 
-    사용자의 실제 작업 트리이므로 `build/` 를 통째로 날리지 않는다. 우리가 돌릴
-    클래스의 JUnit XML 과, 이번 실행이 다시 만들 JaCoCo 리포트만 치운다.
+    사용자의 실제 작업 트리이므로 산출물 디렉터리를 통째로 날리지 않는다. 우리가
+    돌릴 클래스의 JUnit XML 과, 이번 실행이 다시 만들 커버리지 리포트만 치운다.
     """
-    results_dir = repo_root / _JUNIT_DIR
+    results_dir = layout.junit_dir
     targets = _report_files(results_dir, class_name) if results_dir.is_dir() else []
-    targets.append(repo_root / _JACOCO_XML)
+    targets.append(layout.coverage_report)
     for path in targets:
         try:
             path.unlink(missing_ok=True)

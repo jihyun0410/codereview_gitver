@@ -44,14 +44,52 @@
 
 ```
 codetest run / test
-  1. prepare_test      MCP  @SpringBootTest 주입 + 저장 경로 계산
-  2. gradle test       CLI  이 PC 의 프로젝트에서 실행  ← JDK·Gradle 이 여기 필요
+  1. prepare_test      MCP  @SpringBootTest 주입 + 저장 경로 추정
+  2. 빌드 실행         CLI  이 PC 의 프로젝트에서 실행  ← JDK·빌드 도구가 여기 필요
   3. report_execution  MCP  중요도 재판정 → Agent 적절성 판정
 ```
 
-* 이 PC 에 **JDK 와 Gradle**(또는 프로젝트의 `gradlew`)이 필요합니다
-* `gradlew` 가 없으면 시스템 `gradle` 을 씁니다. `--gradle` 로 경로를 지정할 수 있습니다
+* 이 PC 에 **JDK** 와 **Gradle 또는 Maven**(또는 프로젝트의 `gradlew`/`mvnw`)이 필요합니다
+* 래퍼가 없으면 시스템 `gradle`/`mvn` 을 씁니다. `--gradle` / `--maven` 으로 경로를 지정할 수 있습니다
 * 실행이 끝나면 **주입했던 테스트 파일만** 지웁니다. 미커밋 변경분은 건드리지 않습니다
+
+### 폴더 구조는 프로젝트마다 다릅니다
+
+테스트를 쓸 자리·리포트 경로·실행 명령을 상수로 두면 **"Gradle 단일 모듈이 저장소
+루트에 있는"** 프로젝트에서만 동작합니다. 그래서 실행 직전에 실제 디렉터리를 보고
+정합니다 (`codetest/project_layout.py`).
+
+| 항목 | 어떻게 정하나 |
+|---|---|
+| 빌드 도구 | `build.gradle[.kts]` → Gradle, `pom.xml` → Maven (모듈에서 루트로 올라가며 확인) |
+| 모듈 | **테스트 대상 패키지의 `src/main` 을 가진 모듈**. 그 다음 서버가 준 경로, 소스를 가진 유일한 모듈 순 |
+| 테스트 파일 | `<모듈>/src/test/java/<패키지>/<클래스>.java` |
+| 실행 위치 | 래퍼(`gradlew`/`mvnw`)와 `settings.gradle`/최상위 `pom.xml` 이 있는 빌드 루트 |
+| 실행 명령 | Gradle `:<모듈>:test --tests *<클래스>` / Maven `-pl <모듈> -am test -Dtest=<클래스>` |
+| JUnit 리포트 | Gradle `<모듈>/build/test-results/test` / Maven `<모듈>/target/surefire-reports` |
+| 커버리지 | Gradle `<모듈>/build/reports/jacoco/test/jacocoTestReport.xml` / Maven `<모듈>/target/site/jacoco/jacoco.xml` |
+
+그래서 이런 구조가 모두 됩니다.
+
+```
+단일 모듈            멀티 모듈                 빌드 루트가 하위        Maven
+repo/                repo/                     repo/                  repo/
+├─ build.gradle      ├─ settings.gradle        ├─ docs/               ├─ pom.xml
+└─ src/main/java     ├─ api/  ← 여기에 쓴다    └─ backend/            ├─ api/  ← 여기
+                     └─ batch/                    ├─ gradlew          └─ batch/
+                                                  └─ src/main/java
+```
+
+몇 가지 규칙이 더 있습니다.
+
+* 테스트 소스 디렉터리는 언제나 `src/test/java` 입니다. 생성물이 Java 이고, Gradle 의
+  java 플러그인과 Maven 의 기본 `testSourceDirectory` 가 둘 다 이 경로를 컴파일하므로
+  **Kotlin 프로젝트에서도** 여기에 두어야 합니다.
+* 멀티 모듈에서 **어느 모듈인지 정할 수 없으면 찍지 않고 멈춥니다.** 엉뚱한 모듈에
+  쓰면 원인을 찾기가 더 어렵기 때문입니다 — 후보를 보여 주고 `--module` 을 권합니다.
+* 빌드 스크립트에서 소스 경로를 직접 바꾼 프로젝트(`sourceSets` 재정의 등)는 자동으로
+  알 수 없습니다. `--module` / `--test-root` 또는 `.codetest/config.json` 에
+  `module` / `test_source_root` 로 지정하세요.
 
 ## 설치
 
@@ -136,6 +174,16 @@ Agent 에 넘깁니다.
 |---|---|---|
 | `CODETEST_SERVER_URL` | (config.py 기본값) | MCP 엔드포인트 주소 |
 | `CODETEST_API_KEY` | (없음) | MCP 인증 키 (`X-API-Key`) |
+
+저장소별 설정(`<repo>/.codetest/config.json`)에는 프로젝트 구조를 덮어쓸 수 있습니다.
+**평소에는 비워 둡니다** — 자동 탐지가 맞지 않을 때만 씁니다.
+
+| 키 | 기본값 | 설명 |
+|---|---|---|
+| `module` | (자동 탐지) | 테스트를 넣을 빌드 모듈 (예: `"api"`) |
+| `test_source_root` | (자동 탐지) | 테스트 소스 루트 (예: `"api/src/test/java"`) |
+| `gradle_command` | `gradle` | `gradlew` 가 없을 때 쓸 실행 파일 |
+| `maven_command` | `mvn` | `mvnw` 가 없을 때 쓸 실행 파일 |
 
 ## 연결이 끊길 때
 
