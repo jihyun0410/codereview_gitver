@@ -185,6 +185,23 @@ Agent 에 넘깁니다.
 | `gradle_command` | `gradle` | `gradlew` 가 없을 때 쓸 실행 파일 |
 | `maven_command` | `mvn` | `mvnw` 가 없을 때 쓸 실행 파일 |
 
+### 대기 시간
+
+호출 성격에 따라 다릅니다. `--timeout` 으로 그때그때 바꿀 수 있습니다.
+
+| 호출 | 기본값 | 왜 |
+|---|---|---|
+| 핸드셰이크(`initialize`)·`tools/list`·`prepare_test` | **3분** | LLM 이 끼지 않는 짧은 호출. 30초로는 사내 프록시를 거쳐 MCP 서버가 처음 깨어나는 동안 끊겼다 |
+| `generate` | 5분 | 변경 분석 + LLM 생성 |
+| `project register` | 10분 | 커밋 소스 스냅샷을 함께 올린다 |
+| `run` / `test` | 20분 | 생성 + Gradle/Maven 실행 + 판정 |
+
+    요청이 시간 초과되었습니다 (30s)
+
+이 메시지를 보셨다면 핸드셰이크가 30초에 끊긴 예전 버전입니다. 지금은 3분까지
+기다립니다. **긴 호출은 3분으로 줄이지 않았습니다** — 생성과 테스트 실행은 그보다
+오래 걸리는 것이 정상이라, 3분으로 맞추면 멀쩡한 실행이 도중에 끊깁니다.
+
 ## 연결이 끊길 때
 
     RemoteProtocolError: peer closed connection without sending complete

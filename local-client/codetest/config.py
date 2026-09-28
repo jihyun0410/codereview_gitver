@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -94,8 +95,6 @@ def save_global(config: Config) -> Path:
     GLOBAL_CONFIG_PATH.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    try:  # API Key 가 담기므로 소유자만 읽도록 (POSIX)
+    with suppress(OSError):  # API Key 가 담기므로 소유자만 읽도록 (POSIX)
         GLOBAL_CONFIG_PATH.chmod(0o600)
-    except OSError:
-        pass
     return GLOBAL_CONFIG_PATH

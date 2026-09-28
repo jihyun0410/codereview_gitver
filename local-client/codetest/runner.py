@@ -19,6 +19,7 @@ Test Code 저장 / 조회.
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from pathlib import Path
 
 TEST_FILE = Path("src") / "test" / "test.txt"
@@ -73,10 +74,8 @@ def load_test(repo_root: Path) -> tuple[str, dict]:
     meta_path = repo_root / META_FILE
     meta = dict(DEFAULT_META)
     if meta_path.is_file():
-        try:
+        with suppress(json.JSONDecodeError, OSError):
             meta.update(json.loads(meta_path.read_text(encoding="utf-8")))
-        except json.JSONDecodeError:
-            pass
     return code, meta
 
 
