@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 
 #: LLM 생성 + Gradle 빌드가 겹치면 수 분이 걸린다
-DEFAULT_TIMEOUT = 300.0
+DEFAULT_TIMEOUT = 3000.0
 #: 테스트 실행까지 포함하는 호출(run/execute)의 기본 대기 시간
 EXECUTE_TIMEOUT = 1200.0
 
@@ -150,18 +150,18 @@ class AgentClient:
                 "capabilities": {},
                 "clientInfo": {"name": "codetest", "version": "0.1.0"},
             },
-            timeout=30.0,
+            timeout=3000.0,
         )
         self._protocol_version = result.get("protocolVersion", PROTOCOL_VERSION)
         self._initialized = True  # 이 시점부터 프로토콜 버전 헤더를 붙인다
         # 초기화 완료 알림 (응답 없음)
-        self._post({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, 30.0)
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, 3000.0)
 
     # --- 도구 호출 ------------------------------------------------------
     def tool_names(self) -> list[str]:
         """서버가 실제로 제공하는 도구 이름 목록."""
         self._initialize()
-        return [t.get("name", "?") for t in self._rpc("tools/list", timeout=30.0).get("tools", [])]
+        return [t.get("name", "?") for t in self._rpc("tools/list", timeout=3000.0).get("tools", [])]
 
     def _call(self, tool: str, arguments: dict, timeout: float | None = None) -> Any:
         self._initialize()
