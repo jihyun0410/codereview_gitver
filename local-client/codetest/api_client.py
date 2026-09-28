@@ -28,7 +28,7 @@ import httpx
 #: 핸드셰이크·조회처럼 LLM 이 끼지 않는 짧은 호출의 대기 시간.
 #: 30초로는 사내 프록시를 거쳐 MCP 서버가 처음 깨어나는 동안 끊겼다
 #: ("요청이 시간 초과되었습니다 (30s)"). 3분이면 그 구간을 넘긴다.
-SHORT_TIMEOUT = 180.0
+SHORT_TIMEOUT = 3000.0
 #: LLM 생성 + Gradle 빌드가 겹치면 수 분이 걸린다
 DEFAULT_TIMEOUT = 3000.0
 #: 테스트 실행까지 포함하는 호출(run/execute)의 기본 대기 시간
@@ -155,15 +155,12 @@ class AgentClient:
                 "clientInfo": {"name": "codetest", "version": "0.1.0"},
             },
 
-            timeout=3000.0,
             timeout=SHORT_TIMEOUT,
 
         )
         self._protocol_version = result.get("protocolVersion", PROTOCOL_VERSION)
         self._initialized = True  # 이 시점부터 프로토콜 버전 헤더를 붙인다
         # 초기화 완료 알림 (응답 없음)
-
-        self._post({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, 3000.0)
 
         self._post(
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
@@ -175,8 +172,6 @@ class AgentClient:
     def tool_names(self) -> list[str]:
         """서버가 실제로 제공하는 도구 이름 목록."""
         self._initialize()
-
-        return [t.get("name", "?") for t in self._rpc("tools/list", timeout=3000.0).get("tools", [])]
 
         return [t.get("name", "?") for t in self._rpc("tools/list", timeout=SHORT_TIMEOUT).get("tools", [])]
 
