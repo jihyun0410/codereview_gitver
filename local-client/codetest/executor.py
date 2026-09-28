@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 import subprocess
 import xml.etree.ElementTree as ET
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -354,10 +355,8 @@ def _clear_stale_reports(layout: Layout, class_name: str) -> None:
     targets = _report_files(results_dir, class_name) if results_dir.is_dir() else []
     targets.append(layout.coverage_report)
     for path in targets:
-        try:
+        with suppress(OSError):   # 지우지 못해도 실행은 계속한다 (집계가 낡을 뿐)
             path.unlink(missing_ok=True)
-        except OSError:
-            pass          # 지우지 못해도 실행은 계속한다 (집계가 낡을 뿐)
 
 
 def _safe_target(repo_root: Path, relative_path: str) -> Path:

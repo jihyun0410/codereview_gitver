@@ -68,15 +68,18 @@ def _handler(request: httpx.Request) -> httpx.Response:
 
 _sent: list[dict] = []
 _headers_sent: list[dict] = []
+_timeouts: list = []
 
 
 def _client(monkeypatch, handler=_handler) -> AgentClient:
     """httpx.Client 가 MockTransport 를 쓰도록 갈아 끼운다."""
     _sent.clear()
     _headers_sent.clear()
+    _timeouts.clear()
     real_client = httpx.Client
 
     def _factory(*args, **kwargs):
+        _timeouts.append(kwargs.get("timeout"))
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(*args, **kwargs)
 
@@ -153,3 +156,35 @@ def test_cut_before_any_answer_becomes_a_readable_api_error(monkeypatch):
     assert "연결을 끊었습니다" in message
     assert "RemoteProtocolError" in message          # 원인을 지우지는 않는다
     assert "proxy_read_timeout" in message           # 어디를 볼지 알려 준다
+
+
+# --- 타임아웃 -------------------------------------------------------------
+#
+# 핸드셰이크가 30초였을 때, 사내 프록시를 거쳐 MCP 서버가 처음 깨어나는 동안
+# "요청이 시간 초과되었습니다 (30s)" 로 끊겼다. LLM 이 끼지 않는 짧은 호출도
+# 3분까지는 기다린다.
+def test_the_handshake_waits_three_minutes(monkeypatch):
+    _client(monkeypatch).tool_names()
+
+    assert api_client.SHORT_TIMEOUT == 180.0
+    # initialize / notifications/initialized / tools/list 세 번 모두
+    assert _timeouts == [180.0, 180.0, 180.0]
+
+
+def test_long_calls_keep_their_own_budget(monkeypatch):
+    """생성·실행은 3분보다 오래 걸린다 — 짧은 값으로 덮으면 안 된다."""
+    client = _client(monkeypatch)
+    client.generate_tests("p1", "diff", [])
+    client.report_execution("p1", {"exit_code": 0}, "class T {}")
+
+    # 핸드셰이크(initialize + notifications) 2회 뒤 tools/call 두 건
+    assert _timeouts[2:] == [api_client.DEFAULT_TIMEOUT, api_client.EXECUTE_TIMEOUT]
+    assert api_client.DEFAULT_TIMEOUT > api_client.SHORT_TIMEOUT
+    assert api_client.EXECUTE_TIMEOUT > api_client.SHORT_TIMEOUT
+
+
+def test_prepare_test_waits_three_minutes_too(monkeypatch):
+    client = _client(monkeypatch)
+    client.prepare_test("p1", "class T {}")
+
+    assert _timeouts[2:] == [api_client.SHORT_TIMEOUT]

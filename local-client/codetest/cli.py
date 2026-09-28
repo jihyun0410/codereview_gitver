@@ -20,14 +20,22 @@ CLI 는 MCP 하나만 알면 된다. MCP ↔ Agent 통신은 MCP 가 처리한�
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 
 from codetest import config as config_module
 from codetest import executor, project_layout, runner
-from codetest.api_client import EXECUTE_TIMEOUT, AgentClient, ApiError
+from codetest.api_client import (
+    DEFAULT_TIMEOUT,
+    EXECUTE_TIMEOUT,
+    SHORT_TIMEOUT,
+    AgentClient,
+    ApiError,
+)
 
 #: 등록은 커밋 소스 스냅샷을 함께 올려 본문이 커진다.
 REGISTER_TIMEOUT = 600.0
@@ -46,9 +54,22 @@ project_app = typer.Typer(help="프로젝트 등록/삭제", no_args_is_help=Tru
 app.add_typer(project_app, name="project")
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     ui.print_error(message)
     raise typer.Exit(code=1)
+
+
+@contextmanager
+def _reporting(*errors: type[Exception]):
+    """오류를 화면에 찍고 종료 코드 1로 끝낸다.
+
+    `_fail` 이 이미 `typer.Exit` 을 던지므로 호출부에 `return`/`raise` 를 덧붙일
+    필요가 없다 — 예전에는 그 한 줄이 여섯 군데에 도달 불가 코드로 남아 있었다.
+    """
+    try:
+        yield
+    except errors as exc:
+        _fail(str(exc))
 
 
 def _repo() -> Path:
@@ -56,7 +77,6 @@ def _repo() -> Path:
         return find_repo_root()
     except GitError as exc:
         _fail(str(exc))
-        raise  # 도달하지 않음 (typer.Exit)
 
 
 @dataclass
@@ -102,11 +122,8 @@ def _client(repo_root: Path, timeout: float) -> tuple[AgentClient, str]:
 
 def _collect(repo_root: Path, scope: str) -> tuple[str, list[dict]]:
     """대상 변경분을 모아 (diff, sources) 를 만든다."""
-    try:
+    with _reporting(GitError):
         changes = collect_changes(scope, repo_root)
-    except GitError as exc:
-        _fail(str(exc))
-        raise
 
     if changes.is_empty:
         ui.print_warning("대상 변경이 없습니다.")
@@ -150,21 +167,15 @@ def project_register(
 
     # 커밋된 소스를 함께 올린다. generate/run/test 는 미커밋 변경분만 보내므로,
     # 이걸 올려 둬야 MCP 가 그 위에 변경분을 덮어 "현재 코드" 를 Agent 에 넘긴다.
-    try:
+    with _reporting(GitError):
         committed, warnings = collect_committed_files(repo_root)
-    except GitError as exc:
-        _fail(str(exc))
-        return
     for warning in warnings:
         ui.print_warning(warning)
     ui.print_info(f"커밋된 소스 {len(committed)}개를 함께 전송합니다.")
     payload["sources"] = [{"path": path, "content": content} for path, content in committed]
 
-    try:
+    with _reporting(ApiError):
         created = client.create_project(**payload)
-    except ApiError as exc:
-        _fail(str(exc))
-        return
 
     project_id = created.get("id") or created.get("project_id")
     if not project_id:
@@ -187,13 +198,10 @@ def project_delete(
     if not yes and not typer.confirm(f"프로젝트({cfg.project_id}) 정보를 삭제할까요?"):
         raise typer.Exit(code=0)
 
-    client = AgentClient(cfg.server_url, cfg.api_key, timeout=60.0)
+    client = AgentClient(cfg.server_url, cfg.api_key, timeout=SHORT_TIMEOUT)
     ui.print_info(f"전송 대상: {client.describe('delete_project')}", soft_wrap=True)
-    try:
+    with _reporting(ApiError):
         client.delete_project(cfg.project_id)
-    except ApiError as exc:
-        _fail(str(exc))
-        return
 
     config_module.save_project_id(repo_root, None)
     ui.print_success("프로젝트 정보를 삭제했습니다.")
@@ -223,15 +231,12 @@ def _execute_locally(
     test_code = generated.get("test_code", "")
 
     ui.print_info("@SpringBootTest 주입 중… (MCP)")
-    try:
+    with _reporting(ApiError):
         prepared = client.prepare_test(project_id, test_code, generated.get("base_package"))
-    except ApiError as exc:
-        _fail(str(exc))
-        raise
 
     package = prepared.get("package", "")
     class_name = prepared.get("class_name") or Path(prepared["file_path"]).stem
-    try:
+    with _reporting(project_layout.LayoutError):
         layout = project_layout.detect(
             repo_root,
             package=package,
@@ -239,15 +244,12 @@ def _execute_locally(
             module_override=build.module,
             test_root_override=build.test_root,
         )
-    except project_layout.LayoutError as exc:
-        _fail(str(exc))
-        raise
 
     ui.print_info(
         "이 PC 에서 테스트 실행 중… "
         f"({layout.describe()}: {layout.relative_test_file(package, class_name)})"
     )
-    try:
+    with _reporting(executor.ExecutionError):
         result = executor.run_tests(
             repo_root,
             test_source=prepared["source"],
@@ -260,12 +262,9 @@ def _execute_locally(
             layout=layout,
             timeout=int(timeout),
         )
-    except executor.ExecutionError as exc:
-        _fail(str(exc))
-        raise
 
     ui.print_info("결과 판정 중… (MCP: 중요도 재판정 → Agent 적절성 판단)")
-    try:
+    with _reporting(ApiError):
         return client.report_execution(
             project_id,
             execution=result.to_dict(),
@@ -276,9 +275,6 @@ def _execute_locally(
             intent_rationale=generated.get("intent_rationale", ""),
             timeout=timeout,
         )
-    except ApiError as exc:
-        _fail(str(exc))
-        raise
 
 
 @app.command("run")
@@ -306,11 +302,8 @@ def run(
     diff, sources = _collect(repo_root, scope)
 
     ui.print_info("Test Code 생성 중… (MCP 분석 → Agent 생성)")
-    try:
+    with _reporting(ApiError):
         generated = client.generate_tests(project_id, diff, sources)
-    except ApiError as exc:
-        _fail(str(exc))
-        return
     if not generated.get("test_code"):
         _fail("서버가 Test Code 를 생성하지 못했습니다.")
 
@@ -323,7 +316,7 @@ def run(
 
 @app.command("generate")
 def generate(
-    timeout: float = typer.Option(300.0, "--timeout", help="서버 응답 대기 시간(초)"),
+    timeout: float = typer.Option(DEFAULT_TIMEOUT, "--timeout", help="서버 응답 대기 시간(초)"),
 ) -> None:
     """Git Working Tree 기반 변경 파일에 대하여 Test Code 만 생성한다.
 
@@ -336,12 +329,8 @@ def generate(
     diff, sources = _collect(repo_root, "worktree")
 
     ui.print_info("Test Code 생성 중… (의도 분석 → 생성)")
-    try:
+    with _reporting(ApiError):
         generated = client.generate_tests(project_id, diff, sources)
-    except ApiError as exc:
-        _fail(str(exc))
-        return
-
     if not generated.get("test_code"):
         _fail("서버가 Test Code 를 생성하지 못했습니다.")
 
