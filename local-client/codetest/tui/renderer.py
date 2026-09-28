@@ -322,7 +322,7 @@ def print_result_detail(report: dict, result_file: Path | None = None) -> None:
     if build_errors:
         console.print(
             Panel(
-                _plain("\n".join(f"- {item}" for item in build_errors)),
+                _plain(_bullets(build_errors)),
                 title="[bold]빌드 오류 (테스트 실패가 아님)[/]",
                 border_style="red",
             )
@@ -339,7 +339,7 @@ def print_result_detail(report: dict, result_file: Path | None = None) -> None:
     failures = report.get("failures") or []
     if failures:
         console.print(
-            Panel(_plain("\n".join(f"- {item}" for item in failures)),
+            Panel(_plain(_bullets(failures)),
                   title="[bold]실패 내역[/]", border_style="red")
         )
     if report.get("details"):
@@ -476,12 +476,12 @@ def render_result_detail(report: dict) -> str:
         parts.append(section(
             "빌드 오류 (테스트 실패가 아님)",
             "테스트가 한 건도 실행되지 않았습니다. 아래를 고친 뒤 다시 실행하세요.\n"
-            + "\n".join(f"- {item}" for item in build_errors),
+            + _bullets(build_errors),
         ))
 
     failures = report.get("failures") or []
     if failures:
-        parts.append(section("실패 내역", "\n".join(f"- {item}" for item in failures)))
+        parts.append(section("실패 내역", _bullets(failures)))
     if report.get("details"):
         parts.append(section("결과 상세", report["details"]))
     if report.get("output"):
@@ -531,6 +531,11 @@ def _pad(label: str, width: int) -> str:
     """
     span = sum(2 if east_asian_width(char) in "WF" else 1 for char in label)
     return label + " " * max(width - span, 0)
+
+
+def _bullets(items: list) -> str:
+    """항목을 '- ' 목록 한 덩어리로. 화면과 파일이 같은 문장을 쓰게 한다."""
+    return "\n".join(f"- {item}" for item in items)
 
 
 def _plain(text: str, limit: int = 4000) -> Text:

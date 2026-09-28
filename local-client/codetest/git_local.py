@@ -68,7 +68,7 @@ class LocalChanges:
 
 def _run_git(args: list[str], cwd: Path | None = None) -> str:
     try:
-        completed = subprocess.run(  # noqa: S603 — 고정 실행 파일(git)
+        completed = subprocess.run(          # 고정 실행 파일(git) 이라 셸을 타지 않는다
             ["git", *args],
             cwd=str(cwd) if cwd else None,
             capture_output=True,
@@ -167,8 +167,7 @@ def collect_changes(scope: str = "unstaged", repo_root: Path | None = None) -> L
             ).splitlines()
             if path.strip() and not is_agent_artifact(path)
         ]
-        for path in untracked:
-            files.append(ChangedFile(path=path, status="added"))
+        files.extend(ChangedFile(path=path, status="added") for path in untracked)
         extra = _build_untracked_diff(root, untracked)
         if extra:
             diff = (diff + "\n" + extra) if diff.strip() else extra
