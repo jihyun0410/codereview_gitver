@@ -105,7 +105,7 @@ class AgentClient:
                     return None
 
                 if "text/event-stream" in response.headers.get("content-type", ""):
-                    messages = _read_sse(response)
+                    messages = _read_sse(response, payload.get("id"))
                 else:
                     response.read()
                     if not response.content:
@@ -338,19 +338,24 @@ def _sse_messages(body: str) -> list[dict]:
     return list(_iter_sse_messages(body.splitlines()))
 
 
-def _read_sse(response: httpx.Response) -> list[dict]:
+def _read_sse(response: httpx.Response, request_id: Any = None) -> list[dict]:
     """SSE 를 받다가 끊겨도 **이미 받은 메시지는 살린다**.
 
     MCP 는 도구 결과를 보낸 *뒤* 스트림을 닫는다. 그 마지막 닫힘만 앞단에서
     잘려도 httpx 는 RemoteProtocolError 를 던지는데, 그때 받아 둔 응답까지
     버리면 멀쩡히 끝난 생성·실행을 실패로 보고하게 된다. 한 줄도 못 받았을
     때만 오류로 올린다.
+
+    내 요청 id 의 응답을 받으면 **그 자리에서 멈춘다** — 앞단 프록시가 스트림
+    닫힘을 늦게 넘기거나 붙잡아 두면, 결과를 받고도 터미널이 끝나지 않는다.
     """
     messages: list[dict] = []
     try:
         for message in _iter_sse_messages(response.iter_lines()):
             # 한 건씩 담는다 — 통째로 모으면 끊겼을 때 받은 것까지 함께 잃는다
             messages.append(message)  # noqa: PERF402
+            if request_id is not None and message.get("id") == request_id:
+                break
     except httpx.TransportError:
         if not messages:
             raise

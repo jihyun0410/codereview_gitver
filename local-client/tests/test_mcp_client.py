@@ -144,6 +144,28 @@ def test_result_survives_a_stream_that_is_cut_after_the_answer(monkeypatch):
     ) == {"id": "p9"}
 
 
+def test_register_returns_even_if_the_stream_never_closes(monkeypatch):
+    """결과를 보낸 뒤 앞단이 스트림을 닫지 않아도 터미널이 끝나야 한다."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "initialize":
+            return httpx.Response(200, headers=SSE, content=_sse(
+                {"jsonrpc": "2.0", "id": body["id"], "result": {}}))
+        if "id" not in body:
+            return httpx.Response(202)
+
+        def _stream():
+            yield _sse({"jsonrpc": "2.0", "id": body["id"],
+                        "result": {"structuredContent": {"id": "p9"}}})
+            raise AssertionError("응답을 받은 뒤에도 스트림을 계속 읽었다")
+
+        return httpx.Response(200, headers=SSE, content=_stream())
+
+    assert _client(monkeypatch, handler).create_project(
+        name="demo", git_url="git@x", owner="me"
+    ) == {"id": "p9"}
+
+
 def test_cut_before_any_answer_becomes_a_readable_api_error(monkeypatch):
     """한 줄도 못 받았으면 트레이스백 대신 무엇을 확인할지 알려 준다."""
     def handler(request: httpx.Request) -> httpx.Response:
