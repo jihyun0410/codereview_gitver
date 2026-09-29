@@ -166,6 +166,40 @@ def test_register_returns_even_if_the_stream_never_closes(monkeypatch):
     ) == {"id": "p9"}
 
 
+_PROGRESS = {"jsonrpc": "2.0", "method": "notifications/progress",
+             "params": {"progressToken": "test_generate", "progress": 10}}
+
+
+def _handshake_then(tool_response):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        _sent.append(body)
+        if body.get("method") == "initialize":
+            return httpx.Response(200, headers=SSE, content=_sse(
+                {"jsonrpc": "2.0", "id": body["id"], "result": {}}))
+        if "id" not in body:
+            return httpx.Response(202)
+        return tool_response(body)
+    return handler
+
+
+def test_heartbeats_are_skipped_and_the_token_is_sent(monkeypatch):
+    """MCP 는 오래 걸리는 동안 진행 알림을 흘린다 — 결과만 골라 쓴다."""
+    handler = _handshake_then(lambda body: httpx.Response(200, headers=SSE, content=_sse(
+        _PROGRESS, _PROGRESS,
+        {"jsonrpc": "2.0", "id": body["id"], "result": {"structuredContent": {"intent": "x"}}},
+    )))
+    assert _client(monkeypatch, handler).generate_tests("p9", "", []) == {"intent": "x"}
+    assert _sent[-1]["params"]["_meta"] == {"progressToken": "test_generate"}
+
+
+def test_cut_after_heartbeats_but_before_the_answer_is_an_error(monkeypatch):
+    """진행 알림만 받고 끊겼으면 결과가 없는 것이다 — 빈 결과로 넘기면 안 된다."""
+    handler = _handshake_then(lambda body: _truncated(_PROGRESS))
+    with pytest.raises(ApiError, match="연결을 끊었습니다"):
+        _client(monkeypatch, handler).generate_tests("p9", "", [])
+
+
 def test_cut_before_any_answer_becomes_a_readable_api_error(monkeypatch):
     """한 줄도 못 받았으면 트레이스백 대신 무엇을 확인할지 알려 준다."""
     def handler(request: httpx.Request) -> httpx.Response:

@@ -124,11 +124,12 @@ class AgentClient:
         except httpx.TransportError as exc:
             raise ApiError(_disconnected(exc, self.endpoint)) from None
 
-        # SSE 에는 알림이 섞여 오므로 내 요청 id 에 대응하는 응답만 고른다
+        # SSE 에는 진행·로그 알림이 섞여 오므로 내 요청 id 에 대응하는 응답만 고른다.
+        # 알림만 오고 응답이 없으면 결과로 착각하지 않고 None (= 빈 응답) 으로 본다.
         for message in messages:
             if isinstance(message, dict) and message.get("id") == payload.get("id"):
                 return message
-        return messages[-1] if messages else None
+        return None
 
     def _rpc(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
         self._next_id += 1
@@ -179,7 +180,13 @@ class AgentClient:
     def _call(self, tool: str, arguments: dict, timeout: float | None = None) -> Any:
         self._initialize()
         try:
-            result = self._rpc("tools/call", {"name": tool, "arguments": arguments}, timeout)
+            # progressToken 을 주면 MCP 가 오래 걸리는 동안 진행 알림을 흘려보낸다 —
+            # 서버 앞단의 60초 무응답 Fallback 을 피한다. 호출은 한 번에 하나라 도구 이름으로 충분하다.
+            result = self._rpc(
+                "tools/call",
+                {"name": tool, "arguments": arguments, "_meta": {"progressToken": tool}},
+                timeout,
+            )
         except ApiError as exc:
             raise ApiError(f"{exc}{self._tool_hint()}", exc.status_code) from None
 
@@ -339,26 +346,20 @@ def _sse_messages(body: str) -> list[dict]:
 
 
 def _read_sse(response: httpx.Response, request_id: Any = None) -> list[dict]:
-    """SSE 를 받다가 끊겨도 **이미 받은 메시지는 살린다**.
+    """내 요청 id 의 응답을 받으면 **그 자리에서 멈춘다**.
 
-    MCP 는 도구 결과를 보낸 *뒤* 스트림을 닫는다. 그 마지막 닫힘만 앞단에서
-    잘려도 httpx 는 RemoteProtocolError 를 던지는데, 그때 받아 둔 응답까지
-    버리면 멀쩡히 끝난 생성·실행을 실패로 보고하게 된다. 한 줄도 못 받았을
-    때만 오류로 올린다.
+    MCP 는 도구 결과를 보낸 *뒤* 스트림을 닫는다. 앞단 프록시가 그 닫힘을
+    늦게 넘기거나 잘라 버려도, 응답을 받은 뒤라 더 읽지 않으므로 터미널이
+    멈추거나 끝난 작업을 실패로 보고하지 않는다.
 
-    내 요청 id 의 응답을 받으면 **그 자리에서 멈춘다** — 앞단 프록시가 스트림
-    닫힘을 늦게 넘기거나 붙잡아 두면, 결과를 받고도 터미널이 끝나지 않는다.
+    응답 전에 끊기면 그대로 올린다 — 그 전에 진행 알림을 받았더라도 결과는
+    아직 없다.
     """
     messages: list[dict] = []
-    try:
-        for message in _iter_sse_messages(response.iter_lines()):
-            # 한 건씩 담는다 — 통째로 모으면 끊겼을 때 받은 것까지 함께 잃는다
-            messages.append(message)  # noqa: PERF402
-            if request_id is not None and message.get("id") == request_id:
-                break
-    except httpx.TransportError:
-        if not messages:
-            raise
+    for message in _iter_sse_messages(response.iter_lines()):
+        messages.append(message)
+        if request_id is not None and message.get("id") == request_id:
+            break
     return messages
 
 
