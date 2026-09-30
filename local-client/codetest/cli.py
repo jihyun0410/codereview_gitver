@@ -147,7 +147,8 @@ def project_register(
 ) -> None:
     """명령어를 입력한 환경의 Project 를 등록하고 필요한 정보를 서버로 전달한다."""
     repo_root = _repo()
-    changes = collect_changes("staged", repo_root)  # 원격 URL / 브랜치 조회용
+    with _reporting(GitError):
+        changes = collect_changes("staged", repo_root)  # 원격 URL / 브랜치 조회용
 
     if not changes.remote_url:
         _fail("origin 원격이 없습니다. `git remote add origin <URL>` 후 다시 실행하세요.")
@@ -219,10 +220,12 @@ def _execute_locally(
     sources: list[dict],
     build: _Build,
     timeout: float,
-) -> dict:
+) -> tuple[dict, str]:
     """MCP 로 @SpringBootTest 를 주입받아 **이 PC 의 프로젝트에서** 실행한다.
 
     실행은 로컬에서 하고, 중요도 재판정과 결과 적절성 판단만 서버에 맡긴다.
+    리포트와 함께 **실제로 돌린 소스**를 돌려준다 — 화면이 보여 주는 test.txt 와
+    실행된 코드가 달라지지 않게 호출부가 그것으로 다시 저장한다.
 
     MCP 가 돌려준 `file_path` 는 **단서로만** 쓴다. MCP 에는 사용자의 작업 트리가
     없어 개요에 담긴 소스 경로로 추정할 뿐이라, 실제 자리는 이 PC 의 디렉터리를
@@ -265,7 +268,7 @@ def _execute_locally(
 
     ui.print_info("결과 판정 중… (MCP: 중요도 재판정 → Agent 적절성 판단)")
     with _reporting(ApiError):
-        return client.report_execution(
+        report = client.report_execution(
             project_id,
             execution=result.to_dict(),
             test_code=prepared["source"],
@@ -275,6 +278,7 @@ def _execute_locally(
             intent_rationale=generated.get("intent_rationale", ""),
             timeout=timeout,
         )
+    return report, prepared["source"]
 
 
 @app.command("run")
@@ -308,10 +312,11 @@ def run(
         _fail("서버가 Test Code 를 생성하지 못했습니다.")
 
     saved = _save(repo_root, generated)
-    report = _execute_locally(
+    report, executed = _execute_locally(
         repo_root, client, project_id, generated, diff, sources, build, timeout
     )
-    _show(generated, report, saved, _save_result(repo_root, report))
+    saved = _save(repo_root, {**generated, "test_code": executed}, executed=True)
+    _show({**generated, "test_code": executed}, report, saved, _save_result(repo_root, report))
 
 
 @app.command("generate")
@@ -372,31 +377,38 @@ def test(
     except GitError:
         diff, sources = "", []
 
-    report = _execute_locally(
+    report, executed = _execute_locally(
         repo_root, client, project_id, {**meta, "test_code": test_code},
         diff, sources, build, timeout,
     )
+    saved = _save(repo_root, {**meta, "test_code": executed}, executed=True)
     _show(
-        {**meta, "test_code": test_code}, report,
-        repo_root / runner.TEST_FILE, _save_result(repo_root, report),
+        {**meta, "test_code": executed}, report, saved, _save_result(repo_root, report),
     )
 
 
 # ===========================================================================
 #  공통 출력 흐름
 # ===========================================================================
-def _save(repo_root: Path, generated: dict) -> Path:
+def _save(repo_root: Path, generated: dict, executed: bool = False) -> Path:
     """Test Code 를 src/test/test.txt 로 남기고 그 경로를 돌려준다.
 
     결과 화면의 'TEST CODE 보기' 가 여는 파일이 바로 이 경로다.
+
+    `executed=True` 는 실행을 마친 뒤의 재저장이다. Agent 가 만든 원본에는
+    `@SpringBootTest` 가 없고 MCP 가 주입한 소스가 실제로 돌아가는데, 원본만
+    남겨 두면 화면이 "@SpringBootTest 적용됨" 이라 말하면서 파일에는 그 애너테이션이
+    없는 상태가 된다. 돌아간 코드를 그대로 남긴다.
     """
     saved = runner.save_test(
         repo_root, generated.get("test_code", ""), runner.meta_from_generated(generated)
     )
-    ui.print_success(f"Test Code 저장: {saved.relative_to(repo_root).as_posix()}")
+    label = "실행한 Test Code 저장" if executed else "Test Code 저장"
+    ui.print_success(f"{label}: {saved.relative_to(repo_root).as_posix()}")
 
-    for warning in generated.get("analysis_warnings") or []:
-        ui.print_warning(warning)
+    if not executed:
+        for warning in generated.get("analysis_warnings") or []:
+            ui.print_warning(warning)
     return saved
 
 
