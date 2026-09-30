@@ -394,3 +394,35 @@ def test_stale_reports_are_cleared_in_the_right_module(tmp_path, monkeypatch):
 
     assert result.total == 0                 # 옛 XML 이 이번 집계로 둔갑하지 않았다
     assert result.tests_ran is False
+
+
+# --- 산출물은 "변경된 소스" 가 아니다 ----------------------------------------------
+#
+# 보통은 프로젝트의 .gitignore 가 build/ 를 걸러 주지만, 그러지 않은 프로젝트에서는
+# JUnit·JaCoCo XML 이 변경 파일로 잡혀 Agent 맥락 예산을 잡아먹었다.
+def test_build_output_is_not_collected_as_a_changed_source():
+    from codetest.git_local import is_agent_artifact
+
+    for path in ("build/test-results/test/TEST-x.xml",
+                 "build/reports/jacoco/test/jacocoTestReport.xml",
+                 "target/surefire-reports/TEST-x.xml",
+                 "out/production/x.class",
+                 ".gradle/caches/x",
+                 "./build/x.xml"):
+        assert is_agent_artifact(path), path
+
+
+def test_our_own_artifacts_are_still_excluded():
+    """접두사 처리를 손보다가 .codetest/ 가 빠지는 일이 없도록."""
+    from codetest.git_local import is_agent_artifact
+
+    for path in (".codetest/config.json", "src/test/test.txt", "src/test/test-result.txt"):
+        assert is_agent_artifact(path), path
+
+
+def test_real_sources_are_not_mistaken_for_output():
+    from codetest.git_local import is_agent_artifact
+
+    for path in ("src/main/java/A.java", "src/test/java/com/example/FooTest.java",
+                 "buildSrc/src/main/kotlin/convention.gradle.kts", "outbox/Mailer.java"):
+        assert not is_agent_artifact(path), path

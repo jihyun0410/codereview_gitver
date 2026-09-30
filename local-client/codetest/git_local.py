@@ -32,11 +32,24 @@ AGENT_ARTIFACTS: tuple[str, ...] = (
     "src/test/test-result.txt",
 )
 
+#: 빌드 도구가 만든 산출물. 보통은 프로젝트의 .gitignore 가 걸러 주지만
+#: (`git ls-files --exclude-standard`), 그러지 않은 프로젝트에서는 JUnit·JaCoCo
+#: XML 이 "변경된 소스" 로 Agent 까지 올라가 맥락 예산을 잡아먹는다.
+BUILD_OUTPUTS: tuple[str, ...] = (
+    "build/",      # Gradle
+    "target/",     # Maven
+    "out/",        # IntelliJ
+    ".gradle/",
+)
+
 
 def is_agent_artifact(path: str) -> bool:
-    normalized = path.replace("\\", "/")
+    """이 경로가 소스가 아니라 산출물인가 — 우리 것이든 빌드 도구 것이든."""
+    # lstrip("./") 은 앞의 점까지 먹어 .codetest/ 가 안 걸린다 — 접두사만 떼야 한다
+    normalized = path.replace("\\", "/").removeprefix("./")
     return any(
-        normalized == item or normalized.startswith(item) for item in AGENT_ARTIFACTS
+        normalized == item or normalized.startswith(item)
+        for item in (*AGENT_ARTIFACTS, *BUILD_OUTPUTS)
     )
 
 
