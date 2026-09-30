@@ -217,33 +217,29 @@ def test_cut_before_any_answer_becomes_a_readable_api_error(monkeypatch):
 # --- 타임아웃 -------------------------------------------------------------
 #
 # 핸드셰이크가 30초였을 때, 사내 프록시를 거쳐 MCP 서버가 처음 깨어나는 동안
-# "요청이 시간 초과되었습니다 (30s)" 로 끊겼다. 값 자체는 운영에서 조정하므로
-# 숫자를 박지 않고 **어느 호출이 어떤 예산을 쓰는지**와 최소 3분 하한만 고정한다.
-#: 30초 사고를 되풀이하지 않기 위한 하한
-MIN_SHORT_TIMEOUT = 180.0
-
-
-def test_the_handshake_uses_the_short_budget(monkeypatch):
+# "요청이 시간 초과되었습니다 (30s)" 로 끊겼다. LLM 이 끼지 않는 짧은 호출도
+# 3분까지는 기다린다.
+def test_the_handshake_waits_three_minutes(monkeypatch):
     _client(monkeypatch).tool_names()
 
+    assert api_client.SHORT_TIMEOUT == 180.0
     # initialize / notifications/initialized / tools/list 세 번 모두
-    assert _timeouts == [api_client.SHORT_TIMEOUT] * 3
-    assert api_client.SHORT_TIMEOUT >= MIN_SHORT_TIMEOUT
+    assert _timeouts == [180.0, 180.0, 180.0]
 
 
-def test_each_call_uses_its_own_budget(monkeypatch):
-    """생성과 실행은 예산이 다르다 — 서로 덮어쓰면 안 된다."""
+def test_long_calls_keep_their_own_budget(monkeypatch):
+    """생성·실행은 3분보다 오래 걸린다 — 짧은 값으로 덮으면 안 된다."""
     client = _client(monkeypatch)
     client.generate_tests("p1", "diff", [])
     client.report_execution("p1", {"exit_code": 0}, "class T {}")
 
     # 핸드셰이크(initialize + notifications) 2회 뒤 tools/call 두 건
     assert _timeouts[2:] == [api_client.DEFAULT_TIMEOUT, api_client.EXECUTE_TIMEOUT]
-    for budget in (api_client.DEFAULT_TIMEOUT, api_client.EXECUTE_TIMEOUT):
-        assert budget >= MIN_SHORT_TIMEOUT
+    assert api_client.DEFAULT_TIMEOUT > api_client.SHORT_TIMEOUT
+    assert api_client.EXECUTE_TIMEOUT > api_client.SHORT_TIMEOUT
 
 
-def test_prepare_test_uses_the_short_budget_too(monkeypatch):
+def test_prepare_test_waits_three_minutes_too(monkeypatch):
     client = _client(monkeypatch)
     client.prepare_test("p1", "class T {}")
 
